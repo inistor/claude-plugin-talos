@@ -483,6 +483,15 @@ func handleNetstat(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		Feature: &machine.NetstatRequest_Feature{
 			Pid: true,
 		},
+		L4Proto: &machine.NetstatRequest_L4Proto{
+			Tcp:  true,
+			Tcp6: true,
+			Udp:  true,
+			Udp6: true,
+		},
+		Netns: &machine.NetstatRequest_NetNS{
+			Hostnetwork: true,
+		},
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("netstat failed (may not be supported on this node): %v", err)), nil
