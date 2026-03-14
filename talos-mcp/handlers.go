@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
@@ -114,7 +115,13 @@ func handleHealth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	}
 	defer c.Close()
 
-	resp, err := c.ClusterHealthCheck(nCtx, 0, nil)
+	args := req.GetArguments()
+	waitTimeout := 300 * time.Second
+	if v, ok := args["wait_timeout"].(float64); ok {
+		waitTimeout = time.Duration(v) * time.Second
+	}
+
+	resp, err := c.ClusterHealthCheck(nCtx, waitTimeout, nil)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("health check failed: %v", err)), nil
 	}
@@ -145,6 +152,17 @@ func handleVersion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		return mcp.NewToolResultError(fmt.Sprintf("version failed: %v", err)), nil
 	}
 
+	args := req.GetArguments()
+	short, _ := args["short"].(bool)
+
+	if short {
+		var tags []string
+		for _, msg := range resp.GetMessages() {
+			tags = append(tags, msg.GetVersion().GetTag())
+		}
+		return mcp.NewToolResultText(strings.Join(tags, ", ")), nil
+	}
+
 	var results []map[string]any
 	for _, msg := range resp.GetMessages() {
 		v := msg.GetVersion()
@@ -172,11 +190,14 @@ func handleApplyConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	args := req.GetArguments()
 	config, _ := args["config"].(string)
 	mode, _ := args["mode"].(string)
+	dryRun, _ := args["dry_run"].(bool)
 
 	applyMode := machine.ApplyConfigurationRequest_AUTO
 	switch strings.ToLower(mode) {
 	case "no-reboot":
 		applyMode = machine.ApplyConfigurationRequest_NO_REBOOT
+	case "reboot":
+		applyMode = machine.ApplyConfigurationRequest_REBOOT
 	case "staged":
 		applyMode = machine.ApplyConfigurationRequest_STAGED
 	case "try":
@@ -184,8 +205,9 @@ func handleApplyConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	}
 
 	resp, err := c.ApplyConfiguration(nCtx, &machine.ApplyConfigurationRequest{
-		Data: []byte(config),
-		Mode: applyMode,
+		Data:   []byte(config),
+		Mode:   applyMode,
+		DryRun: dryRun,
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("apply config failed: %v", err)), nil
@@ -200,7 +222,18 @@ func handleReboot(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	}
 	defer c.Close()
 
-	if err := c.Reboot(nCtx); err != nil {
+	args := req.GetArguments()
+	var opts []client.RebootMode
+	if mode, ok := args["mode"].(string); ok {
+		switch strings.ToLower(mode) {
+		case "powercycle":
+			opts = append(opts, client.WithPowerCycle)
+		case "force":
+			opts = append(opts, client.WithForce)
+		}
+	}
+
+	if err := c.Reboot(nCtx, opts...); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("reboot failed: %v", err)), nil
 	}
 	return mcp.NewToolResultText("Reboot initiated."), nil
@@ -213,7 +246,15 @@ func handleShutdown(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 	}
 	defer c.Close()
 
-	if err := c.Shutdown(nCtx); err != nil {
+	args := req.GetArguments()
+	force, _ := args["force"].(bool)
+
+	var opts []client.ShutdownOption
+	if force {
+		opts = append(opts, client.WithShutdownForce(true))
+	}
+
+	if err := c.Shutdown(nCtx, opts...); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("shutdown failed: %v", err)), nil
 	}
 	return mcp.NewToolResultText("Shutdown initiated."), nil
@@ -236,10 +277,23 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		reboot = v
 	}
 
-	if err := c.ResetGeneric(nCtx, &machine.ResetRequest{
+	resetReq := &machine.ResetRequest{
 		Graceful: graceful,
 		Reboot:   reboot,
-	}); err != nil {
+	}
+
+	if wipeMode, ok := args["wipe_mode"].(string); ok {
+		switch strings.ToLower(wipeMode) {
+		case "system-disk":
+			resetReq.Mode = machine.ResetRequest_SYSTEM_DISK
+		case "user-disks":
+			resetReq.Mode = machine.ResetRequest_USER_DISKS
+		default:
+			resetReq.Mode = machine.ResetRequest_ALL
+		}
+	}
+
+	if err := c.ResetGeneric(nCtx, resetReq); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("reset failed: %v", err)), nil
 	}
 	return mcp.NewToolResultText("Reset initiated."), nil
@@ -254,8 +308,20 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 
 	args := req.GetArguments()
 	image, _ := args["image"].(string)
+	force, _ := args["force"].(bool)
+	stage, _ := args["stage"].(bool)
 
-	resp, err := c.Upgrade(nCtx, image, false, false)
+	upgradeOpts := []client.UpgradeOption{
+		client.WithUpgradeImage(image),
+		client.WithUpgradeForce(force),
+		client.WithUpgradeStage(stage),
+	}
+
+	if rebootMode, ok := args["reboot_mode"].(string); ok && strings.ToLower(rebootMode) == "powercycle" {
+		upgradeOpts = append(upgradeOpts, client.WithUpgradeRebootMode(machine.UpgradeRequest_POWERCYCLE))
+	}
+
+	resp, err := c.UpgradeWithOptions(nCtx, upgradeOpts...)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed: %v", err)), nil
 	}
@@ -278,7 +344,14 @@ func handleLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		tailLines = int32(v)
 	}
 
-	stream, err := c.Logs(nCtx, "system", common.ContainerDriver_CONTAINERD, service, false, tailLines)
+	namespace := "system"
+	driver := common.ContainerDriver_CONTAINERD
+	if k8s, ok := args["kubernetes"].(bool); ok && k8s {
+		namespace = "k8s.io"
+		driver = common.ContainerDriver_CRI
+	}
+
+	stream, err := c.Logs(nCtx, namespace, driver, service, false, tailLines)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("logs failed: %v", err)), nil
 	}
@@ -297,7 +370,10 @@ func handleDmesg(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	}
 	defer c.Close()
 
-	stream, err := c.Dmesg(nCtx, false, false)
+	args := req.GetArguments()
+	tail, _ := args["tail"].(bool)
+
+	stream, err := c.Dmesg(nCtx, false, tail)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("dmesg failed: %v", err)), nil
 	}
@@ -384,6 +460,11 @@ func handleProcesses(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("processes failed: %v", err)), nil
 	}
+
+	// Sort parameter is for client-side sorting — the API returns all processes
+	args := req.GetArguments()
+	sortBy, _ := args["sort"].(string)
+	_ = sortBy // TODO: implement client-side sort by rss/cpu if needed
 
 	var procs []map[string]any
 	for _, msg := range resp.GetMessages() {
