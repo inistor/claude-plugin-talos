@@ -25,7 +25,9 @@ Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 
 ## Talosconfig
 
-The Talos client config lives at `~/.talos/config` (or `$TALOSCONFIG`). It contains contexts with endpoints and TLS credentials. Use `talos_config_contexts` to list available contexts. Each MCP tool accepts an optional `node` parameter to target a specific node and `context` to select a talosconfig context.
+The Talos client config lives at `~/.talos/config` (or `$TALOSCONFIG`). It contains contexts with endpoints and TLS credentials. Each MCP tool accepts an optional `node` parameter to target a specific node and `context` to select a talosconfig context.
+
+**Before any Talos operation**, check if a local `talosconfig` file exists in the current working directory or project root. If found, call `talos_set_config(path)` with the absolute path to use it instead of the default `~/.talos/config`. This is critical when working in project directories that have their own cluster configs.
 
 ## Talos Overview
 

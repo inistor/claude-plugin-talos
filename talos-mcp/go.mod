@@ -1,4 +1,4 @@
-module github.com/ionmudreac/claude-plugin-talos/mcp-server
+module github.com/ionmudreac/claude-plugin-talos/talos-mcp
 
 go 1.26.1
 

@@ -10,6 +10,13 @@ func registerTools(s *server.MCPServer) {
 	// node: optional, target node IP/hostname
 	// context: optional, talosconfig context name
 
+	// --- Configuration management ---
+
+	s.AddTool(mcp.NewTool("talos_set_config",
+		mcp.WithDescription("Set the talosconfig file path for this session. All subsequent tools will use this config. Use when a local talosconfig exists instead of ~/.talos/config."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute path to the talosconfig file")),
+	), handleSetConfig)
+
 	// --- Cluster operations ---
 
 	s.AddTool(mcp.NewTool("talos_bootstrap",

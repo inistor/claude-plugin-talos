@@ -35,7 +35,7 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: ./mcp-server
+          context: ./talos-mcp
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

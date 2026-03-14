@@ -42,6 +42,20 @@ func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// --- Configuration management ---
+
+func handleSetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	path, _ := args["path"].(string)
+
+	if _, err := os.Stat(path); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("talosconfig not found: %v", err)), nil
+	}
+
+	setConfigPath(path)
+	return mcp.NewToolResultText(fmt.Sprintf("Talosconfig set to: %s", path)), nil
+}
+
 // --- Cluster operations ---
 
 func handleBootstrap(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
