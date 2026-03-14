@@ -478,8 +478,19 @@ func handleNetstat(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	}
 	defer c.Close()
 
+	args := req.GetArguments()
+	filter := machine.NetstatRequest_ALL
+	if f, ok := args["filter"].(string); ok {
+		switch strings.ToLower(f) {
+		case "connected":
+			filter = machine.NetstatRequest_CONNECTED
+		case "listening":
+			filter = machine.NetstatRequest_LISTENING
+		}
+	}
+
 	resp, err := c.Netstat(nCtx, &machine.NetstatRequest{
-		Filter: machine.NetstatRequest_ALL,
+		Filter: filter,
 		Feature: &machine.NetstatRequest_Feature{
 			Pid: true,
 		},

@@ -135,6 +135,7 @@ func registerTools(s *server.MCPServer) {
 
 	s.AddTool(mcp.NewTool("talos_netstat",
 		mcp.WithDescription("List network connections on a node."),
+		mcp.WithString("filter", mcp.Description("Filter: all (default), connected, listening")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleNetstat)
