@@ -478,9 +478,17 @@ func handleNetstat(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	}
 	defer c.Close()
 
-	resp, err := c.Netstat(nCtx, &machine.NetstatRequest{})
+	resp, err := c.Netstat(nCtx, &machine.NetstatRequest{
+		Filter: machine.NetstatRequest_ALL,
+		Feature: &machine.NetstatRequest_Feature{
+			Pid: true,
+		},
+	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("netstat failed: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("netstat failed (may not be supported on this node): %v", err)), nil
+	}
+	if resp == nil {
+		return mcp.NewToolResultError("netstat returned empty response"), nil
 	}
 	return jsonResult(resp)
 }
