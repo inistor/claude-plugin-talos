@@ -1,10 +1,12 @@
 {
   "mcpServers": {
     "talos": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/mcp-server/talos-mcp",
-      "env": {
-        "TALOSCONFIG": "${TALOSCONFIG:-}"
-      }
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-v", "${HOME}/.talos:/root/.talos:ro",
+        "ionnistor/talos-mcp:main"
+      ]
     }
   }
 }
