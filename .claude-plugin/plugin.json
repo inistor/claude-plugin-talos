@@ -1,6 +1,6 @@
 {
   "name": "talos",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Talos Linux cluster management — lifecycle, configuration, troubleshooting, and image creation",
   "author": {
     "name": "Ion Mudreac"
