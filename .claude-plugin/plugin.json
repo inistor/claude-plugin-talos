@@ -1,0 +1,14 @@
+{
+  "name": "talos",
+  "version": "0.1.0",
+  "description": "Talos Linux cluster management — lifecycle, configuration, troubleshooting, and image creation",
+  "author": {
+    "name": "Ion Mudreac"
+  },
+  "license": "MIT",
+  "keywords": ["talos", "kubernetes", "infrastructure", "cluster-management"],
+  "metadata": {
+    "talosVersion": "1.12",
+    "talosDocsBase": "https://docs.siderolabs.com/talos/v1.12"
+  }
+}

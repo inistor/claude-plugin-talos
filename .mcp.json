@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "talos": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp-server/talos-mcp",
+      "env": {
+        "TALOSCONFIG": "${TALOSCONFIG:-}"
+      }
+    }
+  }
+}
