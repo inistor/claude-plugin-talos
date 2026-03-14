@@ -41,6 +41,8 @@ The Talos client config lives at `~/.talos/config` (or `$TALOSCONFIG`). It conta
 
 **Before any Talos operation**, check if a local `talosconfig` file exists in the current working directory or project root. If found, read its content and call `talos_set_config(content)` to use it instead of the default `~/.talos/config`. This is critical when working in project directories that have their own cluster configs.
 
+**Single-cluster per session**: The MCP server is stateful — `talos_set_config` sets the config for ALL subsequent calls in the session. It cannot operate on multiple clusters in parallel. To switch clusters, call `talos_set_config` again with the new config content. Use the `context` parameter on individual tools to switch between contexts within the same talosconfig.
+
 ## Talos Overview
 
 Talos Linux is an immutable, API-driven, minimal Linux OS designed for Kubernetes. There is no SSH, no shell, no package manager. All management is via the Talos API (port 50000) using mutual TLS. The OS is read-only with an A/B partition scheme for atomic upgrades and rollback.
