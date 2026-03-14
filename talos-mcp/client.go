@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"sync"
 
 	"github.com/siderolabs/talos/pkg/machinery/client"
@@ -12,11 +13,28 @@ var (
 	configMu   sync.RWMutex
 )
 
-// setConfigPath sets a custom talosconfig path for all subsequent client calls.
-func setConfigPath(path string) {
+// setConfigFromContent writes talosconfig YAML to a temp file and uses it for all subsequent calls.
+func setConfigFromContent(content string) (string, error) {
 	configMu.Lock()
 	defer configMu.Unlock()
-	configPath = path
+
+	if configPath != "" {
+		os.Remove(configPath)
+	}
+
+	f, err := os.CreateTemp("", "talosconfig-*.yaml")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	f.Close()
+
+	configPath = f.Name()
+	return configPath, nil
 }
 
 // getConfigPath returns the current talosconfig path, or empty for default.
@@ -27,7 +45,6 @@ func getConfigPath() string {
 }
 
 // newClient creates a Talos client from the configured talosconfig.
-// If contextName is non-empty, it selects that talosconfig context.
 func newClient(ctx context.Context, contextName string) (*client.Client, error) {
 	var opts []client.OptionFunc
 
@@ -43,7 +60,6 @@ func newClient(ctx context.Context, contextName string) (*client.Client, error) 
 }
 
 // nodeCtx returns a context targeting a specific node.
-// If node is empty, returns the original context (uses default from talosconfig).
 func nodeCtx(ctx context.Context, node string) context.Context {
 	if node == "" {
 		return ctx

@@ -13,9 +13,13 @@ func registerTools(s *server.MCPServer) {
 	// --- Configuration management ---
 
 	s.AddTool(mcp.NewTool("talos_set_config",
-		mcp.WithDescription("Set the talosconfig file path for this session. All subsequent tools will use this config. Use when a local talosconfig exists instead of ~/.talos/config."),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Absolute path to the talosconfig file")),
+		mcp.WithDescription("Set the talosconfig for this session by passing its YAML content. All subsequent tools will use this config instead of ~/.talos/config. Claude should read the talosconfig file and pass its content here."),
+		mcp.WithString("content", mcp.Required(), mcp.Description("Full talosconfig YAML content")),
 	), handleSetConfig)
+
+	s.AddTool(mcp.NewTool("talos_config_info",
+		mcp.WithDescription("Show current talosconfig content (contexts, endpoints, nodes)."),
+	), handleConfigInfo)
 
 	// --- Cluster operations ---
 
@@ -36,15 +40,6 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleVersion)
-
-	s.AddTool(mcp.NewTool("talos_get",
-		mcp.WithDescription("Get Talos resources (members, services, routes, addresses, etc). Like 'talosctl get <type> [id]'."),
-		mcp.WithString("resource_type", mcp.Required(), mcp.Description("Resource type: members, services, routes, addresses, links, etc.")),
-		mcp.WithString("resource_id", mcp.Description("Optional resource ID to get a specific resource")),
-		mcp.WithString("namespace", mcp.Description("Resource namespace (default: runtime)")),
-		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
-		mcp.WithString("context", mcp.Description("Talosconfig context name")),
-	), handleGet)
 
 	// --- Node operations ---
 
@@ -138,12 +133,6 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleMemory)
 
-	s.AddTool(mcp.NewTool("talos_cpu",
-		mcp.WithDescription("Get CPU usage info from a node."),
-		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
-		mcp.WithString("context", mcp.Description("Talosconfig context name")),
-	), handleCPU)
-
 	s.AddTool(mcp.NewTool("talos_netstat",
 		mcp.WithDescription("List network connections on a node."),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
@@ -176,36 +165,4 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleEtcdStatus)
-
-	// --- Configuration ---
-
-	s.AddTool(mcp.NewTool("talos_gen_config",
-		mcp.WithDescription("Generate machine configuration for a new cluster."),
-		mcp.WithString("cluster_name", mcp.Required(), mcp.Description("Cluster name")),
-		mcp.WithString("endpoint", mcp.Required(), mcp.Description("Control plane endpoint URL (e.g. https://10.0.0.1:6443)")),
-		mcp.WithString("config_patch", mcp.Description("Optional YAML config patch to apply")),
-	), handleGenConfig)
-
-	s.AddTool(mcp.NewTool("talos_patch",
-		mcp.WithDescription("Apply a strategic merge patch to a machine configuration file."),
-		mcp.WithString("config", mcp.Required(), mcp.Description("Original machine configuration YAML")),
-		mcp.WithString("patch", mcp.Required(), mcp.Description("Patch YAML to apply")),
-	), handlePatch)
-
-	s.AddTool(mcp.NewTool("talos_get_config",
-		mcp.WithDescription("Get the current machine configuration from a node."),
-		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
-		mcp.WithString("context", mcp.Description("Talosconfig context name")),
-	), handleGetConfig)
-
-	// --- Contexts ---
-
-	s.AddTool(mcp.NewTool("talos_config_contexts",
-		mcp.WithDescription("List available talosconfig contexts."),
-	), handleConfigContexts)
-
-	s.AddTool(mcp.NewTool("talos_config_info",
-		mcp.WithDescription("Show current talosconfig context info (endpoints, nodes)."),
-		mcp.WithString("context", mcp.Description("Talosconfig context name (default: current)")),
-	), handleConfigInfo)
 }

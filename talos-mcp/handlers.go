@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -34,7 +33,7 @@ func setupClient(ctx context.Context, req mcp.CallToolRequest) (*client.Client, 
 }
 
 // jsonResult marshals v to JSON and returns as tool result text.
-func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
+func jsonResult(v any) (*mcp.CallToolResult, error) {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("marshal error: %v", err)), nil
@@ -42,26 +41,34 @@ func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
-// talosctl builds an exec.Cmd for talosctl with the custom config path if set.
-func talosctl(ctx context.Context, args ...string) *exec.Cmd {
-	if p := getConfigPath(); p != "" {
-		args = append([]string{"--talosconfig", p}, args...)
-	}
-	return exec.CommandContext(ctx, "talosctl", args...)
-}
-
 // --- Configuration management ---
 
 func handleSetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	path, _ := args["path"].(string)
+	content, _ := args["content"].(string)
 
-	if _, err := os.Stat(path); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("talosconfig not found: %v", err)), nil
+	path, err := setConfigFromContent(content)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to set config: %v", err)), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Talosconfig set (written to %s)", path)), nil
+}
+
+func handleConfigInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	cfgPath := getConfigPath()
+	if cfgPath == "" {
+		cfgPath = os.Getenv("TALOSCONFIG")
+	}
+	if cfgPath == "" {
+		home, _ := os.UserHomeDir()
+		cfgPath = home + "/.talos/config"
 	}
 
-	setConfigPath(path)
-	return mcp.NewToolResultText(fmt.Sprintf("Talosconfig set to: %s", path)), nil
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("read talosconfig failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // --- Cluster operations ---
@@ -99,7 +106,7 @@ func handleHealth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 		}
 		messages = append(messages, msg.GetMessage())
 	}
-	return jsonResult(map[string]interface{}{"messages": messages})
+	return jsonResult(map[string]any{"messages": messages})
 }
 
 func handleVersion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -114,10 +121,10 @@ func handleVersion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		return mcp.NewToolResultError(fmt.Sprintf("version failed: %v", err)), nil
 	}
 
-	var results []map[string]interface{}
+	var results []map[string]any
 	for _, msg := range resp.GetMessages() {
 		v := msg.GetVersion()
-		results = append(results, map[string]interface{}{
+		results = append(results, map[string]any{
 			"tag":        v.GetTag(),
 			"sha":        v.GetSha(),
 			"built":      v.GetBuilt(),
@@ -127,36 +134,6 @@ func handleVersion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		})
 	}
 	return jsonResult(results)
-}
-
-func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// The COSI resource API requires complex type registration for generic resource
-	// listing by string name. Delegate to talosctl with JSON output for this one tool.
-	args := req.GetArguments()
-	resourceType, _ := args["resource_type"].(string)
-	resourceID, _ := args["resource_id"].(string)
-	namespace, _ := args["namespace"].(string)
-	node, ctxName := extractParams(req)
-
-	cmdArgs := []string{"get", resourceType, "--output", "json"}
-	if resourceID != "" {
-		cmdArgs = append(cmdArgs, resourceID)
-	}
-	if namespace != "" {
-		cmdArgs = append(cmdArgs, "--namespace", namespace)
-	}
-	if node != "" {
-		cmdArgs = append(cmdArgs, "-n", node)
-	}
-	if ctxName != "" {
-		cmdArgs = append(cmdArgs, "--context", ctxName)
-	}
-
-	out, err := talosctl(ctx, cmdArgs...).CombinedOutput()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("talosctl get failed: %s\n%s", err, string(out))), nil
-	}
-	return mcp.NewToolResultText(string(out)), nil
 }
 
 // --- Node operations ---
@@ -328,14 +305,14 @@ func handleServices(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		return mcp.NewToolResultError(fmt.Sprintf("service list failed: %v", err)), nil
 	}
 
-	var services []map[string]interface{}
+	var services []map[string]any
 	for _, msg := range resp.GetMessages() {
 		for _, svc := range msg.GetServices() {
-			services = append(services, map[string]interface{}{
-				"id":      svc.GetId(),
-				"state":   svc.GetState(),
-				"health":  svc.GetHealth().GetHealthy(),
-				"events":  len(svc.GetEvents().GetEvents()),
+			services = append(services, map[string]any{
+				"id":     svc.GetId(),
+				"state":  svc.GetState(),
+				"health": svc.GetHealth().GetHealthy(),
+				"events": len(svc.GetEvents().GetEvents()),
 			})
 		}
 	}
@@ -364,15 +341,15 @@ func handleContainers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("containers failed: %v", err)), nil
 	}
 
-	var containers []map[string]interface{}
+	var containers []map[string]any
 	for _, msg := range resp.GetMessages() {
-		for _, c := range msg.GetContainers() {
-			containers = append(containers, map[string]interface{}{
-				"id":        c.GetId(),
-				"pod_id":    c.GetPodId(),
-				"name":      c.GetName(),
-				"status":    c.GetStatus(),
-				"image":     c.GetImage(),
+		for _, ct := range msg.GetContainers() {
+			containers = append(containers, map[string]any{
+				"id":        ct.GetId(),
+				"pod_id":    ct.GetPodId(),
+				"name":      ct.GetName(),
+				"status":    ct.GetStatus(),
+				"image":     ct.GetImage(),
 				"namespace": namespace,
 			})
 		}
@@ -392,10 +369,10 @@ func handleProcesses(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return mcp.NewToolResultError(fmt.Sprintf("processes failed: %v", err)), nil
 	}
 
-	var procs []map[string]interface{}
+	var procs []map[string]any
 	for _, msg := range resp.GetMessages() {
 		for _, p := range msg.GetProcesses() {
-			procs = append(procs, map[string]interface{}{
+			procs = append(procs, map[string]any{
 				"pid":     p.GetPid(),
 				"ppid":    p.GetPpid(),
 				"state":   p.GetState(),
@@ -421,16 +398,16 @@ func handleDisks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		return mcp.NewToolResultError(fmt.Sprintf("disks failed: %v", err)), nil
 	}
 
-	var disks []map[string]interface{}
+	var disks []map[string]any
 	for _, msg := range resp.GetMessages() {
 		for _, d := range msg.GetDisks() {
-			disks = append(disks, map[string]interface{}{
-				"device":     d.GetDeviceName(),
-				"size":       d.GetSize(),
-				"model":      d.GetModel(),
-				"serial":     d.GetSerial(),
-				"type":       d.GetType(),
-				"bus_path":   d.GetBusPath(),
+			disks = append(disks, map[string]any{
+				"device":      d.GetDeviceName(),
+				"size":        d.GetSize(),
+				"model":       d.GetModel(),
+				"serial":      d.GetSerial(),
+				"type":        d.GetType(),
+				"bus_path":    d.GetBusPath(),
 				"system_disk": d.GetSystemDisk(),
 			})
 		}
@@ -450,11 +427,11 @@ func handleMounts(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 		return mcp.NewToolResultError(fmt.Sprintf("mounts failed: %v", err)), nil
 	}
 
-	var mounts []map[string]interface{}
+	var mounts []map[string]any
 	for _, msg := range resp.GetMessages() {
 		for _, m := range msg.GetStats() {
-			mounts = append(mounts, map[string]interface{}{
-				"filesystem": m.GetFilesystem(),
+			mounts = append(mounts, map[string]any{
+				"filesystem":  m.GetFilesystem(),
 				"mount_point": m.GetMountedOn(),
 				"size":        m.GetSize(),
 				"available":   m.GetAvailable(),
@@ -476,24 +453,6 @@ func handleMemory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 		return mcp.NewToolResultError(fmt.Sprintf("memory failed: %v", err)), nil
 	}
 	return jsonResult(resp)
-}
-
-func handleCPU(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// No direct CPU method on the client — delegate to talosctl
-	node, ctxName := extractParams(req)
-	_ = ctx // used by exec.CommandContext below
-	cmdArgs := []string{"get", "cpustat", "-o", "json"}
-	if node != "" {
-		cmdArgs = append(cmdArgs, "-n", node)
-	}
-	if ctxName != "" {
-		cmdArgs = append(cmdArgs, "--context", ctxName)
-	}
-	out, err := talosctl(ctx, cmdArgs...).CombinedOutput()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("cpu failed: %s\n%s", err, string(out))), nil
-	}
-	return mcp.NewToolResultText(string(out)), nil
 }
 
 func handleNetstat(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -524,10 +483,10 @@ func handleEtcdMembers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		return mcp.NewToolResultError(fmt.Sprintf("etcd members failed: %v", err)), nil
 	}
 
-	var members []map[string]interface{}
+	var members []map[string]any
 	for _, msg := range resp.GetMessages() {
 		for _, m := range msg.GetMembers() {
-			members = append(members, map[string]interface{}{
+			members = append(members, map[string]any{
 				"id":          m.GetId(),
 				"hostname":    m.GetHostname(),
 				"peer_urls":   m.GetPeerUrls(),
@@ -594,96 +553,4 @@ func handleEtcdStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("etcd status failed: %v", err)), nil
 	}
 	return jsonResult(resp)
-}
-
-// --- Configuration ---
-
-func handleGenConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := req.GetArguments()
-	clusterName, _ := args["cluster_name"].(string)
-	endpoint, _ := args["endpoint"].(string)
-	configPatch, _ := args["config_patch"].(string)
-
-	cmdArgs := []string{"gen", "config", clusterName, endpoint, "--output-dir", "-"}
-	if configPatch != "" {
-		cmdArgs = append(cmdArgs, "--config-patch", configPatch)
-	}
-
-	out, err := talosctl(ctx, cmdArgs...).CombinedOutput()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("gen config failed: %s\n%s", err, string(out))), nil
-	}
-	return mcp.NewToolResultText(string(out)), nil
-}
-
-func handlePatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := req.GetArguments()
-	config, _ := args["config"].(string)
-	patch, _ := args["patch"].(string)
-
-	// Write config and patch to temp files, run talosctl machineconfig patch
-	configFile, err := os.CreateTemp("", "talos-config-*.yaml")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("create temp file failed: %v", err)), nil
-	}
-	defer os.Remove(configFile.Name())
-	configFile.WriteString(config)
-	configFile.Close()
-
-	patchFile, err := os.CreateTemp("", "talos-patch-*.yaml")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("create temp file failed: %v", err)), nil
-	}
-	defer os.Remove(patchFile.Name())
-	patchFile.WriteString(patch)
-	patchFile.Close()
-
-	out, err := talosctl(ctx, "machineconfig", "patch",
-		configFile.Name(), "--patch", "@"+patchFile.Name()).CombinedOutput()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("patch failed: %s\n%s", err, string(out))), nil
-	}
-	return mcp.NewToolResultText(string(out)), nil
-}
-
-func handleGetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// Use talosctl get to retrieve the running machine config
-	node, ctxName := extractParams(req)
-
-	cmdArgs := []string{"get", "mc", "-o", "yaml"}
-	if node != "" {
-		cmdArgs = append(cmdArgs, "-n", node)
-	}
-	if ctxName != "" {
-		cmdArgs = append(cmdArgs, "--context", ctxName)
-	}
-
-	out, err := talosctl(ctx, cmdArgs...).CombinedOutput()
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("get config failed: %s\n%s", err, string(out))), nil
-	}
-	return mcp.NewToolResultText(string(out)), nil
-}
-
-// --- Contexts ---
-
-func handleConfigContexts(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	cfgPath := os.Getenv("TALOSCONFIG")
-	if cfgPath == "" {
-		home, _ := os.UserHomeDir()
-		cfgPath = home + "/.talos/config"
-	}
-
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("read talosconfig failed: %v", err)), nil
-	}
-
-	// Return raw config — Claude can parse with yq
-	return mcp.NewToolResultText(string(data)), nil
-}
-
-func handleConfigInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// Same as contexts — returns full config for Claude to parse
-	return handleConfigContexts(ctx, req)
 }

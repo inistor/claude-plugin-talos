@@ -6,46 +6,13 @@ Targets **Talos Linux v1.12**.
 
 ## Prerequisites
 
+- `docker` — required for the MCP server and for building custom images with imager
+- `talosctl` v1.12+ — for operations not covered by the MCP (resource listing, config generation, patching)
 - `yq` — for YAML parsing in hook scripts
-- `docker` — for building custom images with imager
-
-**MCP server** (one of):
-- `go` 1.26+ — to install via `go install` (recommended)
-- `docker` — to run the pre-built Docker image
 
 ## Installation
 
-### 1. Install the MCP server
-
-**Option A: go install (recommended)**
-
-```bash
-go install github.com/ionmudreac/claude-plugin-talos/talos-mcp@latest
-```
-
-Ensure `~/go/bin` is in your `PATH`:
-```bash
-export PATH=$PATH:$(go env GOPATH)/bin
-```
-
-**Option B: Docker**
-
-No installation needed — the plugin can use the Docker image directly. Override `.mcp.json` in your project or user settings:
-
-```json
-{
-  "mcpServers": {
-    "talos": {
-      "command": "docker",
-      "args": ["run", "--rm", "-i", "-v", "${HOME}/.talos:/root/.talos:ro", "ionnistor/talos-mcp:main"]
-    }
-  }
-}
-```
-
-> **Note**: The Docker option mounts `~/.talos/config` read-only. If you need to use a local talosconfig from your project directory, use Option A instead — the `talos_set_config` tool can point to any path on the host.
-
-### 2. Install the plugin
+### 1. Install the plugin
 
 ```bash
 # Add the marketplace (one-time)
@@ -55,38 +22,27 @@ No installation needed — the plugin can use the Docker image directly. Overrid
 /plugin install talos@inistor-plugins
 ```
 
-### Upgrade
+The MCP server runs as a Docker container (`ionnistor/talos-mcp`) — no separate install needed. It mounts `~/.talos/config` by default. For project-specific talosconfig files, Claude reads the file and passes its content to `talos_set_config`.
+
+**Alternative: go install** (if you prefer a local binary over Docker)
 
 ```bash
-# MCP server
 go install github.com/ionmudreac/claude-plugin-talos/talos-mcp@latest
-
-# Plugin (reinstall picks up latest)
-/plugin install talos@inistor-plugins
 ```
 
-### Uninstall
-
-```bash
-# Remove the binary
-rm $(go env GOPATH)/bin/talos-mcp
-
-# Remove the plugin
-/plugin uninstall talos
-```
+Then override `.mcp.json` in your settings: `{"mcpServers": {"talos": {"command": "talos-mcp"}}}`
 
 ## Components
 
 ### MCP Server (Go)
-A custom Go MCP server wrapping the Talos gRPC API via the official SDK (`github.com/siderolabs/talos/pkg/machinery/client`). Provides 29 tools mapping 1:1 to talosctl operations:
+A custom Go MCP server wrapping the Talos gRPC API via the official SDK (`github.com/siderolabs/talos/pkg/machinery/client`). Distributed as a Docker image (`ionnistor/talos-mcp`). Pure API — no talosctl dependency.
 
-- **Config**: set-config (custom talosconfig path), contexts, config-info
-- **Cluster**: bootstrap, health, version, get (resources)
+- **Config**: set-config (custom talosconfig via content), config-info
+- **Cluster**: bootstrap, health, version
 - **Node**: apply-config, reboot, shutdown, reset, upgrade
 - **Diagnostics**: logs, dmesg, services, containers, processes
-- **System**: disks, mounts, memory, cpu, netstat
+- **System**: disks, mounts, memory, netstat
 - **etcd**: members, snapshot, defrag, status
-- **Generation**: gen-config, patch, get-config
 
 ### Skill
 Comprehensive Talos Linux reference covering machine configuration, cluster lifecycle, boot assets, extensions, networking, security, and troubleshooting. Includes 4 reference files with detailed YAML examples.

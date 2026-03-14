@@ -28,13 +28,18 @@ Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 - For logs: always use `tail_lines` to limit output
 - If a result is saved to a temp file, read it with `jq` or `yq` via Bash to extract only what's needed, then retry with a narrower query
 
-**Exceptions**: Some operations require `talosctl` because no MCP equivalent exists: `talosctl gen secrets`, `talosctl gen config` (for initial cluster setup), `talosctl machineconfig patch`, and `talosctl kubeconfig`.
+**Operations requiring `talosctl`** (no MCP equivalent — use via Bash):
+- `talosctl get <resource_type>` — generic resource listing (members, routes, addresses, extensions, cpustat, etc.)
+- `talosctl gen secrets` / `talosctl gen config` — generate cluster configuration
+- `talosctl machineconfig patch` — apply strategic merge patches to configs
+- `talosctl get mc` — get running machine configuration from a node
+- `talosctl kubeconfig` — retrieve kubeconfig
 
 ## Talosconfig
 
 The Talos client config lives at `~/.talos/config` (or `$TALOSCONFIG`). It contains contexts with endpoints and TLS credentials. Each MCP tool accepts an optional `node` parameter to target a specific node and `context` to select a talosconfig context.
 
-**Before any Talos operation**, check if a local `talosconfig` file exists in the current working directory or project root. If found, call `talos_set_config(path)` with the absolute path to use it instead of the default `~/.talos/config`. This is critical when working in project directories that have their own cluster configs.
+**Before any Talos operation**, check if a local `talosconfig` file exists in the current working directory or project root. If found, read its content and call `talos_set_config(content)` to use it instead of the default `~/.talos/config`. This is critical when working in project directories that have their own cluster configs.
 
 ## Talos Overview
 
