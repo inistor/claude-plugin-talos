@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "talos": {
-      "command": "docker",
-      "args": ["run", "--rm", "-i", "-v", "${HOME}/.talos:/root/.talos:ro", "ionnistor/talos-mcp"]
+      "command": "sh",
+      "args": ["-c", "docker run --rm -i -v $HOME/.talos:/root/.talos:ro ionnistor/talos-mcp"]
     }
   }
 }
