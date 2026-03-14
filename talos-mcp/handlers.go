@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,6 +69,11 @@ func collectStream(stream byteStream) (string, error) {
 func handleSetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	content, _ := args["content"].(string)
+
+	// Try base64 decode first — if it succeeds, use the decoded content
+	if decoded, err := base64.StdEncoding.DecodeString(content); err == nil {
+		content = string(decoded)
+	}
 
 	path, err := setConfigFromContent(content)
 	if err != nil {

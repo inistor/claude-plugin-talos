@@ -13,8 +13,8 @@ func registerTools(s *server.MCPServer) {
 	// --- Configuration management ---
 
 	s.AddTool(mcp.NewTool("talos_set_config",
-		mcp.WithDescription("Set the talosconfig for this session by passing its YAML content. All subsequent tools will use this config instead of ~/.talos/config. Claude should read the talosconfig file and pass its content here."),
-		mcp.WithString("content", mcp.Required(), mcp.Description("Full talosconfig YAML content")),
+		mcp.WithDescription("Set the talosconfig for this session. All subsequent tools will use this config instead of ~/.talos/config. Pass the file content base64-encoded to preserve formatting. Use: base64 < talosconfig via Bash, then pass the output."),
+		mcp.WithString("content", mcp.Required(), mcp.Description("Talosconfig content, base64-encoded (preferred) or raw YAML")),
 	), handleSetConfig)
 
 	s.AddTool(mcp.NewTool("talos_config_info",
