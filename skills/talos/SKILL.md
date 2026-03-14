@@ -22,7 +22,7 @@ Use Kubernetes MCP tools (`mcp__kubernetes-mcp-server__*`) for all Kubernetes op
 Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 
 **Avoid large results**: MCP tool results that exceed the context window get dumped to temp files and become unusable. Always scope queries narrowly:
-- For Kubernetes events: filter by namespace, involved object, or reason — never list all events cluster-wide
+- For Kubernetes events: the MCP events tool often returns too much data even with namespace filtering. Instead, use `kubectl get events -n <namespace> --sort-by='.lastTimestamp' | tail -50` via Bash, or if the result was saved to a temp file, extract recent events with `jq '[.[] | .text | fromjson] | sort_by(.lastTimestamp) | last(20)' <file>`
 - For pod lists: filter by namespace, never list all pods across all namespaces
 - For resource lists: specify the namespace and use label selectors when possible
 - For logs: always use `tail_lines` to limit output
