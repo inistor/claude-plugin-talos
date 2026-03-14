@@ -21,6 +21,13 @@ Use Kubernetes MCP tools (`mcp__kubernetes-mcp-server__*`) for all Kubernetes op
 
 Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 
+**Avoid large results**: MCP tool results that exceed the context window get dumped to temp files and become unusable. Always scope queries narrowly:
+- For Kubernetes events: filter by namespace, involved object, or reason — never list all events cluster-wide
+- For pod lists: filter by namespace, never list all pods across all namespaces
+- For resource lists: specify the namespace and use label selectors when possible
+- For logs: always use `tail_lines` to limit output
+- If a result is saved to a temp file, read it with `jq` or `yq` via Bash to extract only what's needed, then retry with a narrower query
+
 **Exceptions**: Some operations require `talosctl` because no MCP equivalent exists: `talosctl gen secrets`, `talosctl gen config` (for initial cluster setup), `talosctl machineconfig patch`, and `talosctl kubeconfig`.
 
 ## Talosconfig
