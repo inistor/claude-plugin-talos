@@ -42,6 +42,14 @@ func jsonResult(v interface{}) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// talosctl builds an exec.Cmd for talosctl with the custom config path if set.
+func talosctl(ctx context.Context, args ...string) *exec.Cmd {
+	if p := getConfigPath(); p != "" {
+		args = append([]string{"--talosconfig", p}, args...)
+	}
+	return exec.CommandContext(ctx, "talosctl", args...)
+}
+
 // --- Configuration management ---
 
 func handleSetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -144,7 +152,7 @@ func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		cmdArgs = append(cmdArgs, "--context", ctxName)
 	}
 
-	out, err := exec.CommandContext(ctx, "talosctl", cmdArgs...).CombinedOutput()
+	out, err := talosctl(ctx, cmdArgs...).CombinedOutput()
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("talosctl get failed: %s\n%s", err, string(out))), nil
 	}
@@ -481,7 +489,7 @@ func handleCPU(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	if ctxName != "" {
 		cmdArgs = append(cmdArgs, "--context", ctxName)
 	}
-	out, err := exec.CommandContext(ctx, "talosctl", cmdArgs...).CombinedOutput()
+	out, err := talosctl(ctx, cmdArgs...).CombinedOutput()
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("cpu failed: %s\n%s", err, string(out))), nil
 	}
@@ -601,7 +609,7 @@ func handleGenConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		cmdArgs = append(cmdArgs, "--config-patch", configPatch)
 	}
 
-	out, err := exec.CommandContext(ctx, "talosctl", cmdArgs...).CombinedOutput()
+	out, err := talosctl(ctx, cmdArgs...).CombinedOutput()
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("gen config failed: %s\n%s", err, string(out))), nil
 	}
@@ -630,7 +638,7 @@ func handlePatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	patchFile.WriteString(patch)
 	patchFile.Close()
 
-	out, err := exec.CommandContext(ctx, "talosctl", "machineconfig", "patch",
+	out, err := talosctl(ctx, "machineconfig", "patch",
 		configFile.Name(), "--patch", "@"+patchFile.Name()).CombinedOutput()
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("patch failed: %s\n%s", err, string(out))), nil
@@ -650,7 +658,7 @@ func handleGetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		cmdArgs = append(cmdArgs, "--context", ctxName)
 	}
 
-	out, err := exec.CommandContext(ctx, "talosctl", cmdArgs...).CombinedOutput()
+	out, err := talosctl(ctx, cmdArgs...).CombinedOutput()
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("get config failed: %s\n%s", err, string(out))), nil
 	}
