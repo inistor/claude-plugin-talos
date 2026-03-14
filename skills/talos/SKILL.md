@@ -7,7 +7,8 @@ description: |
   WireGuard, KubeSpan), etcd maintenance, troubleshooting, and disaster recovery.
   Triggers for queries like "upgrade my Talos cluster", "build a custom Talos ISO with extensions",
   "etcd is unhealthy", "node won't join the cluster", "configure bonding on Talos",
-  "bootstrap a new Talos cluster", "reset a Talos node", or "add a worker node".
+  "bootstrap a new Talos cluster", "reset a Talos node", "add a worker node",
+  "restore etcd from snapshot", or "recover a failed control plane node".
 version: 1.12.0
 ---
 
@@ -17,7 +18,7 @@ This skill covers Talos Linux v1.12. All documentation references point to https
 
 Use Talos MCP tools (`mcp__talos__*`) for all Talos operations. Never shell out to `talosctl` unless the MCP tool is unavailable.
 
-Use Kubernetes MCP tools (`mcp__kubernetes-mcp-server__*`) for all Kubernetes operations. Never use `kubectl`.
+Use Kubernetes MCP tools (`mcp__kubernetes-mcp-server__*`) for all Kubernetes operations. Avoid `kubectl` unless the MCP tool is impractical (e.g., events — see below).
 
 Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 

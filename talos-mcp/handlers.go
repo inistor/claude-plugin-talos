@@ -41,6 +41,27 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// byteStream is implemented by Logs and Dmesg stream responses.
+type byteStream interface {
+	Recv() (*common.Data, error)
+}
+
+// collectStream reads all data from a byte stream, stopping at EOF.
+func collectStream(stream byteStream) (string, error) {
+	var lines []string
+	for {
+		data, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return "", err
+		}
+		lines = append(lines, string(data.GetBytes()))
+	}
+	return strings.Join(lines, ""), nil
+}
+
 // --- Configuration management ---
 
 func handleSetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -102,6 +123,9 @@ func handleHealth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	for {
 		msg, err := resp.Recv()
 		if err != nil {
+			if err != io.EOF {
+				messages = append(messages, fmt.Sprintf("error: %v", err))
+			}
 			break
 		}
 		messages = append(messages, msg.GetMessage())
@@ -259,15 +283,11 @@ func handleLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		return mcp.NewToolResultError(fmt.Sprintf("logs failed: %v", err)), nil
 	}
 
-	var lines []string
-	for {
-		data, err := stream.Recv()
-		if err != nil {
-			break
-		}
-		lines = append(lines, string(data.GetBytes()))
+	output, err := collectStream(stream)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("logs stream failed: %v", err)), nil
 	}
-	return mcp.NewToolResultText(strings.Join(lines, "")), nil
+	return mcp.NewToolResultText(output), nil
 }
 
 func handleDmesg(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -282,15 +302,11 @@ func handleDmesg(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		return mcp.NewToolResultError(fmt.Sprintf("dmesg failed: %v", err)), nil
 	}
 
-	var lines []string
-	for {
-		data, err := stream.Recv()
-		if err != nil {
-			break
-		}
-		lines = append(lines, string(data.GetBytes()))
+	output, err := collectStream(stream)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("dmesg stream failed: %v", err)), nil
 	}
-	return mcp.NewToolResultText(strings.Join(lines, "")), nil
+	return mcp.NewToolResultText(output), nil
 }
 
 func handleServices(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -512,6 +528,7 @@ func handleEtcdSnapshot(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("etcd snapshot failed: %v", err)), nil
 	}
+	defer reader.Close()
 
 	f, err := os.Create(outputPath)
 	if err != nil {
