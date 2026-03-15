@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/mark3labs/mcp-go/mcp"
+	"go.yaml.in/yaml/v4"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
@@ -133,6 +135,76 @@ func handleConfigInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	}
 
 	return jsonResult(info)
+}
+
+// --- Resource operations ---
+
+func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	resourceType, _ := args["resource_type"].(string)
+	resourceID, _ := args["resource_id"].(string)
+	namespace, _ := args["namespace"].(string)
+
+	// Resolve aliases (e.g. "mc" -> "MachineConfigs.config.talos.dev")
+	rd, err := c.ResolveResourceKind(nCtx, &namespace, resourceType)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("resolve resource type failed: %v", err)), nil
+	}
+
+	resolvedType := rd.TypedSpec().Type
+	resolvedNs := rd.TypedSpec().DefaultNamespace
+
+	if resourceID != "" {
+		// Get a specific resource
+		r, err := c.COSI.Get(nCtx,
+			resource.NewMetadata(resolvedNs, resolvedType, resourceID, resource.VersionUndefined),
+		)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("get resource failed: %v", err)), nil
+		}
+		return jsonResult(resourceToMap(r))
+	}
+
+	// List all resources of this type
+	items, err := c.COSI.List(nCtx,
+		resource.NewMetadata(resolvedNs, resolvedType, "", resource.VersionUndefined),
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list resources failed: %v", err)), nil
+	}
+
+	var results []map[string]any
+	for _, r := range items.Items {
+		results = append(results, resourceToMap(r))
+	}
+	return jsonResult(results)
+}
+
+// resourceToMap converts a COSI resource to a JSON-friendly map.
+func resourceToMap(r resource.Resource) map[string]any {
+	m := map[string]any{
+		"metadata": map[string]any{
+			"namespace": r.Metadata().Namespace(),
+			"type":      r.Metadata().Type(),
+			"id":        r.Metadata().ID(),
+			"version":   r.Metadata().Version().String(),
+			"phase":     r.Metadata().Phase().String(),
+		},
+	}
+	// Marshal spec via YAML then decode to Go map for JSON output
+	if b, err := yaml.Marshal(r.Spec()); err == nil {
+		var spec any
+		if yaml.Unmarshal(b, &spec) == nil {
+			m["spec"] = spec
+		}
+	}
+	return m
 }
 
 // --- Cluster operations ---

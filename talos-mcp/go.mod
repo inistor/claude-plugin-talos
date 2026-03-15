@@ -3,8 +3,10 @@ module github.com/ionmudreac/claude-plugin-talos/talos-mcp
 go 1.26.1
 
 require (
+	github.com/cosi-project/runtime v1.12.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/siderolabs/talos/pkg/machinery v1.12.5
+	go.yaml.in/yaml/v4 v4.0.0-rc.3
 )
 
 require (
@@ -18,7 +20,6 @@ require (
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/containerd/go-cni v1.1.13 // indirect
 	github.com/containernetworking/cni v1.3.0 // indirect
-	github.com/cosi-project/runtime v1.12.0 // indirect
 	github.com/gertd/go-pluralize v0.2.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.3 // indirect
@@ -42,7 +43,6 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
-	go.yaml.in/yaml/v4 v4.0.0-rc.3 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect

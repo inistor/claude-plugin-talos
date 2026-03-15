@@ -21,6 +21,15 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithDescription("Show current talosconfig content (contexts, endpoints, nodes)."),
 	), handleConfigInfo)
 
+	s.AddTool(mcp.NewTool("talos_get",
+		mcp.WithDescription("Get Talos resources by type. Supports aliases (e.g. 'mc', 'addresses', 'volumes', 'members', 'extensions', 'links', 'routes'). Like 'talosctl get <type> [id]'."),
+		mcp.WithString("resource_type", mcp.Required(), mcp.Description("Resource type or alias: addresses, routes, links, members, mc, volumes, extensions, discoveredvolumes, cpustat, etc.")),
+		mcp.WithString("resource_id", mcp.Description("Optional resource ID to get a specific resource")),
+		mcp.WithString("namespace", mcp.Description("Resource namespace (auto-detected if omitted)")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleGet)
+
 	// --- Cluster operations ---
 
 	s.AddTool(mcp.NewTool("talos_bootstrap",

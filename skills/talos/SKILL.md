@@ -30,10 +30,8 @@ Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 - If a result is saved to a temp file, read it with `jq` or `yq` via Bash to extract only what's needed, then retry with a narrower query
 
 **Operations requiring `talosctl`** (no MCP equivalent — use via Bash):
-- `talosctl get <resource_type>` — generic resource listing (members, routes, addresses, extensions, cpustat, etc.)
 - `talosctl gen secrets` / `talosctl gen config` — generate cluster configuration
 - `talosctl machineconfig patch` — apply strategic merge patches to configs
-- `talosctl get mc` — get running machine configuration from a node
 - `talosctl kubeconfig` — retrieve kubeconfig
 
 ## Talosconfig
