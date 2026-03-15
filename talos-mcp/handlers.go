@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -467,23 +468,34 @@ func handleProcesses(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return mcp.NewToolResultError(fmt.Sprintf("processes failed: %v", err)), nil
 	}
 
-	// Sort parameter is for client-side sorting — the API returns all processes
-	args := req.GetArguments()
-	sortBy, _ := args["sort"].(string)
-	_ = sortBy // TODO: implement client-side sort by rss/cpu if needed
-
 	var procs []map[string]any
 	for _, msg := range resp.GetMessages() {
 		for _, p := range msg.GetProcesses() {
 			procs = append(procs, map[string]any{
-				"pid":     p.GetPid(),
-				"ppid":    p.GetPpid(),
-				"state":   p.GetState(),
-				"command": p.GetCommand(),
-				"threads": p.GetThreads(),
+				"pid":             p.GetPid(),
+				"ppid":            p.GetPpid(),
+				"state":           p.GetState(),
+				"command":         p.GetCommand(),
+				"threads":         p.GetThreads(),
+				"cpu_time":        p.GetCpuTime(),
+				"resident_memory": p.GetResidentMemory(),
+				"virtual_memory":  p.GetVirtualMemory(),
 			})
 		}
 	}
+
+	args := req.GetArguments()
+	if sortBy, ok := args["sort"].(string); ok {
+		sort.Slice(procs, func(i, j int) bool {
+			switch strings.ToLower(sortBy) {
+			case "cpu":
+				return procs[i]["cpu_time"].(float64) > procs[j]["cpu_time"].(float64)
+			default: // rss
+				return procs[i]["resident_memory"].(uint64) > procs[j]["resident_memory"].(uint64)
+			}
+		})
+	}
+
 	return jsonResult(procs)
 }
 

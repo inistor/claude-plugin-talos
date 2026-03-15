@@ -30,7 +30,7 @@ func registerTools(s *server.MCPServer) {
 	), handleBootstrap)
 
 	s.AddTool(mcp.NewTool("talos_health",
-		mcp.WithDescription("Check cluster health: etcd, API server, kubelet, connectivity."),
+		mcp.WithDescription("Check cluster health: etcd, API server, kubelet, connectivity. Note: 'finish boot sequence' check on control plane nodes may timeout — this is normal for long-running CPs."),
 		mcp.WithNumber("wait_timeout", mcp.Description("Timeout in seconds to wait for cluster to be ready (default: 300)")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
@@ -101,7 +101,7 @@ func registerTools(s *server.MCPServer) {
 
 	s.AddTool(mcp.NewTool("talos_dmesg",
 		mcp.WithDescription("Get kernel logs (dmesg) from a node."),
-		mcp.WithBoolean("tail", mcp.Description("Only return new messages since boot")),
+		mcp.WithBoolean("tail", mcp.Description("Only return recent messages (useful for large dmesg output). Without this, returns all messages since boot.")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleDmesg)
