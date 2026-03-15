@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
 	"github.com/siderolabs/talos/pkg/machinery/client"
+	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 )
 
 // helper to extract common params
@@ -93,11 +96,43 @@ func handleConfigInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		cfgPath = home + "/.talos/config"
 	}
 
-	data, err := os.ReadFile(cfgPath)
+	cfg, err := clientconfig.Open(cfgPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("read talosconfig failed: %v", err)), nil
 	}
-	return mcp.NewToolResultText(string(data)), nil
+
+	info := map[string]any{
+		"current_context": cfg.Context,
+		"config_path":     cfgPath,
+		"contexts":        map[string]any{},
+	}
+
+	ctxMap := info["contexts"].(map[string]any)
+	for name, c := range cfg.Contexts {
+		ctxInfo := map[string]any{
+			"endpoints": c.Endpoints,
+		}
+		if len(c.Nodes) > 0 {
+			ctxInfo["nodes"] = c.Nodes
+		}
+		if c.Cluster != "" {
+			ctxInfo["cluster"] = c.Cluster
+		}
+		// Parse cert to get expiry and roles
+		if c.Crt != "" {
+			if crtBytes, err := base64.StdEncoding.DecodeString(c.Crt); err == nil {
+				if block, _ := pem.Decode(crtBytes); block != nil {
+					if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+						ctxInfo["roles"] = cert.Subject.Organization
+						ctxInfo["certificate_expires"] = cert.NotAfter.Format(time.RFC3339)
+					}
+				}
+			}
+		}
+		ctxMap[name] = ctxInfo
+	}
+
+	return jsonResult(info)
 }
 
 // --- Cluster operations ---
