@@ -186,9 +186,10 @@ machine:
 ## Diagnostics
 
 Check network state with MCP tools:
-- `talos_get(resource_type="addresses")` — assigned IP addresses
-- `talos_get(resource_type="routes")` — routing table
-- `talos_get(resource_type="links")` — interface status (up/down, MTU, etc.)
+- `talos_addresses` — assigned IP addresses
+- `talos_routes` — routing table
+- `talos_interfaces` — interface status (up/down, MTU, etc.)
 - `talos_netstat` — active connections and listeners
-- `talos_get(resource_type="resolvers")` — configured DNS resolvers
-- `talos_get(resource_type="timeservers")` — configured NTP servers
+- `talos_resolvers` — configured DNS resolvers
+- `talos_hostname` — node hostname
+- `talos_time` — NTP sync status

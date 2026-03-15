@@ -16,12 +16,12 @@ Docs: https://docs.siderolabs.com/talos/v1.12/advanced/troubleshooting/
 | Network | `talos_netstat` | Connectivity |
 | Containers | `talos_containers` | Stuck containers |
 | Processes | `talos_processes` | Runaway processes |
-| Resources | `talos_get(resource_type)` | Any Talos resource |
+| Resources | `talos_get` | Any Talos resource |
 
 ## Common Issues
 
 ### Node Not Joining Cluster
-1. Check discovery: `talos_get(resource_type="discoveredmembers")`
+1. Check discovery: `talos_members`
 2. Verify endpoints in config match actual CP endpoint
 3. Check network connectivity between nodes
 4. Verify machine token matches cluster token
@@ -54,9 +54,9 @@ Docs: https://docs.siderolabs.com/talos/v1.12/advanced/troubleshooting/
 5. If etcd member missing after upgrade: check `talos_etcd_members`
 
 ### Network Issues
-1. `talos_get(resource_type="addresses")` — check assigned IPs
-2. `talos_get(resource_type="routes")` — verify routing table
-3. `talos_get(resource_type="links")` — check interface status
+1. `talos_addresses` — check assigned IPs
+2. `talos_routes` — verify routing table
+3. `talos_interfaces` — check interface status
 4. `talos_netstat` — verify listening ports
 5. `talos_dmesg` — check for NIC driver issues
 
@@ -67,7 +67,7 @@ Docs: https://docs.siderolabs.com/talos/v1.12/advanced/troubleshooting/
 4. Pull through image cache may fill `/var`
 
 ### Certificate Issues
-1. `talos_get(resource_type="certificates")` — check cert status
+1. `talos_get(resource_type="certificates")` — check cert status (use generic get for this resource)
 2. Certificates auto-rotate, but CA must be rotated manually
 3. If expired: apply new config with fresh CA
 

@@ -32,7 +32,6 @@ Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 **Operations requiring `talosctl`** (no MCP equivalent — use via Bash):
 - `talosctl gen secrets` / `talosctl gen config` — generate cluster configuration
 - `talosctl machineconfig patch` — apply strategic merge patches to configs
-- `talosctl kubeconfig` — retrieve kubeconfig
 
 ## Talosconfig
 
@@ -50,6 +49,20 @@ Talos Linux is an immutable, API-driven, minimal Linux OS designed for Kubernete
 
 Key components: `machined` (init), `apid` (API gateway), `trustd` (certificate authority), `etcd` (on control plane nodes only).
 
+## Available MCP Tools
+
+**Config**: `talos_set_config`, `talos_config_info`, `talos_machine_config`
+**Cluster**: `talos_bootstrap`, `talos_health`, `talos_version`, `talos_members`, `talos_kubeconfig`, `talos_get`
+**Node**: `talos_apply_config`, `talos_reboot`, `talos_shutdown`, `talos_reset`, `talos_upgrade`, `talos_rollback`, `talos_wipe`
+**Services**: `talos_services`, `talos_service_restart`, `talos_containers`, `talos_stats`, `talos_image_list`
+**Diagnostics**: `talos_logs`, `talos_dmesg`, `talos_processes`
+**System**: `talos_disks`, `talos_mounts`, `talos_memory`, `talos_cpu`, `talos_disk_usage`, `talos_time`
+**Network**: `talos_interfaces`, `talos_addresses`, `talos_routes`, `talos_netstat`, `talos_resolvers`, `talos_hostname`
+**Storage**: `talos_volumes`, `talos_discovered_volumes`
+**etcd**: `talos_etcd_members`, `talos_etcd_status`, `talos_etcd_snapshot`, `talos_etcd_defrag`, `talos_etcd_remove_member`, `talos_etcd_forfeit_leadership`, `talos_etcd_leave`, `talos_etcd_alarm`
+**Filesystem**: `talos_ls`, `talos_read`
+**Extensions**: `talos_extensions`
+
 ## Machine Configuration
 
 Talos uses a single YAML configuration file (v1alpha1) with two top-level sections:
@@ -57,7 +70,7 @@ Talos uses a single YAML configuration file (v1alpha1) with two top-level sectio
 - `machine` — node-specific: type (controlplane/worker), network, install disk, kubelet, files, kernel args, sysctls, extensions
 - `cluster` — cluster-wide: control plane endpoint, cluster name, API server, etcd, discovery, CNI, inline manifests
 
-Generate configs: `talos_gen_config(cluster_name, endpoint)`
+Generate configs: `talosctl gen config <cluster-name> <endpoint>` (via Bash)
 
 Apply configs: `talos_apply_config(config, mode)` — modes: `auto` (default), `no-reboot`, `staged`, `try`
 
@@ -66,10 +79,12 @@ Modify configs with **strategic merge patches**. Use `$patch: delete` to remove 
 ## Cluster Lifecycle
 
 ### Bootstrap
-1. Generate configs → 2. Apply controlplane config to CP nodes → 3. Apply worker config to worker nodes → 4. Bootstrap etcd on ONE CP node → 5. Verify health → 6. Retrieve kubeconfig
+1. Generate configs (talosctl) → 2. Apply controlplane config (`talos_apply_config`) → 3. Apply worker config → 4. `talos_bootstrap` on ONE CP node → 5. `talos_health` → 6. `talos_kubeconfig`
 
 ### Upgrade Talos
 1. Check current versions (`talos_version`) → 2. Verify health (`talos_health`) → 3. Snapshot etcd (`talos_etcd_snapshot`) → 4. Upgrade CP nodes one at a time (`talos_upgrade`) → 5. Upgrade workers → 6. Verify health
+
+If an upgrade fails, use `talos_rollback` to revert to the previous version (A/B partition scheme).
 
 ### Upgrade Kubernetes
 Done via machine config patch — update these image tags to the target K8s version:
@@ -85,7 +100,7 @@ Apply the patch to all control plane nodes via `talos_apply_config`. Workers pic
 Generate worker config for the cluster, apply to new node. It joins automatically via discovery.
 
 ### Scale Down
-For workers: `talos_reset(node)`. For CP: remove etcd member first (`talos_etcd_members`), then reset.
+For workers: `talos_reset(node)`. For CP nodes: first `talos_etcd_forfeit_leadership` (if leader), then `talos_etcd_leave` or `talos_etcd_remove_member(member_id)`, then `talos_reset(node)`.
 
 ### Reset
 `talos_reset(node, graceful=true)` — wipes the node back to maintenance mode. Always remove from etcd first for CP nodes.
@@ -113,7 +128,7 @@ Three tiers: **core** (official, tested), **extra** (community, tested), **contr
 
 Common extensions: `iscsi-tools`, `qemu-guest-agent`, `intel-ucode`, `amd-ucode`, `nvidia-container-toolkit`, `tailscale`, `drbd`.
 
-Check installed: `talos_get(resource_type="extensions")`
+Check installed: `talos_extensions`
 
 ## Networking
 
@@ -135,7 +150,11 @@ See `references/networking.md` for configuration patterns.
 - Status: `talos_etcd_status`
 - Snapshot: `talos_etcd_snapshot(output_path)` — always do before upgrades/resets
 - Defragment: `talos_etcd_defrag` — run on one node at a time, resource-heavy
-- Recovery: bootstrap with `--recover-from=<snapshot-path>`
+- Remove member: `talos_etcd_remove_member(member_id)` — required before resetting a CP node
+- Forfeit leadership: `talos_etcd_forfeit_leadership` — before maintenance on leader node
+- Leave cluster: `talos_etcd_leave` — graceful removal
+- Alarms: `talos_etcd_alarm` — check for NOSPACE or other alarms
+- Recovery: bootstrap with `--recover-from=<snapshot-path>` (talosctl via Bash)
 
 ## Security
 
@@ -153,9 +172,13 @@ When diagnosing issues, follow this order:
 2. `talos_services` — check service states
 3. `talos_logs(service)` — service-specific logs (kubelet, etcd, apid, machined)
 4. `talos_dmesg` — kernel logs
-5. `talos_etcd_members` + `talos_etcd_status` — etcd health
+5. `talos_etcd_members` + `talos_etcd_status` + `talos_etcd_alarm` — etcd health
 6. Kubernetes MCP: pods, events, node status
-7. `talos_memory`, `talos_disks` — resource pressure
+7. `talos_memory`, `talos_cpu`, `talos_disk_usage` — resource pressure
+8. `talos_interfaces`, `talos_addresses`, `talos_routes` — network state
+9. `talos_volumes`, `talos_discovered_volumes` — storage state
+10. `talos_time` — NTP sync status
+11. `talos_read`, `talos_ls` — inspect files on node
 
 See `references/troubleshooting.md` for common issues and solutions.
 

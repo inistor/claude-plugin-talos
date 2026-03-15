@@ -15,11 +15,13 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/mark3labs/mcp-go/mcp"
-	"go.yaml.in/yaml/v4"
 	"github.com/siderolabs/talos/pkg/machinery/api/common"
 	"github.com/siderolabs/talos/pkg/machinery/api/machine"
+	"github.com/siderolabs/talos/pkg/machinery/api/storage"
+	timeapi "github.com/siderolabs/talos/pkg/machinery/api/time"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"go.yaml.in/yaml/v4"
 )
 
 // helper to extract common params
@@ -614,9 +616,13 @@ func handleProcesses(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		sort.Slice(procs, func(i, j int) bool {
 			switch strings.ToLower(sortBy) {
 			case "cpu":
-				return procs[i]["cpu_time"].(float64) > procs[j]["cpu_time"].(float64)
+				ci, _ := procs[i]["cpu_time"].(float64)
+				cj, _ := procs[j]["cpu_time"].(float64)
+				return ci > cj
 			default: // rss
-				return procs[i]["resident_memory"].(uint64) > procs[j]["resident_memory"].(uint64)
+				ri, _ := procs[i]["resident_memory"].(uint64)
+				rj, _ := procs[j]["resident_memory"].(uint64)
+				return ri > rj
 			}
 		})
 	}
@@ -822,4 +828,325 @@ func handleEtcdStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError(fmt.Sprintf("etcd status failed: %v", err)), nil
 	}
 	return jsonResult(resp)
+}
+
+func handleKubeconfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	data, err := c.Kubeconfig(nCtx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("kubeconfig failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+func handleEtcdRemoveMember(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	memberID, _ := args["member_id"].(float64)
+
+	if err := c.EtcdRemoveMemberByID(nCtx, &machine.EtcdRemoveMemberByIDRequest{
+		MemberId: uint64(memberID),
+	}); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("etcd remove member failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText("Etcd member removed."), nil
+}
+
+func handleEtcdForfeitLeadership(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	resp, err := c.EtcdForfeitLeadership(nCtx, &machine.EtcdForfeitLeadershipRequest{})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("etcd forfeit leadership failed: %v", err)), nil
+	}
+	return jsonResult(resp)
+}
+
+func handleEtcdLeave(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	if err := c.EtcdLeaveCluster(nCtx, &machine.EtcdLeaveClusterRequest{}); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("etcd leave failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText("Node left etcd cluster."), nil
+}
+
+func handleEtcdAlarm(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	resp, err := c.EtcdAlarmList(nCtx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("etcd alarm list failed: %v", err)), nil
+	}
+	return jsonResult(resp)
+}
+
+// --- Additional operations ---
+
+func handleRollback(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	if err := c.Rollback(nCtx); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("rollback failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText("Rollback initiated."), nil
+}
+
+func handleServiceRestart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	service, _ := args["service"].(string)
+
+	resp, err := c.ServiceRestart(nCtx, service)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("service restart failed: %v", err)), nil
+	}
+	return jsonResult(resp)
+}
+
+func handleImageList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	ns := common.ContainerdNamespace_NS_CRI
+	if namespace, ok := args["namespace"].(string); ok && namespace == "system" {
+		ns = common.ContainerdNamespace_NS_SYSTEM
+	}
+
+	stream, err := c.ImageList(nCtx, ns)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("image list failed: %v", err)), nil
+	}
+
+	var images []map[string]any
+	for {
+		img, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("image list stream failed: %v", err)), nil
+		}
+		images = append(images, map[string]any{
+			"name":      img.GetName(),
+			"digest":    img.GetDigest(),
+			"size":      img.GetSize(),
+			"created":   img.GetCreatedAt().AsTime().Format(time.RFC3339),
+		})
+	}
+	return jsonResult(images)
+}
+
+func handleStats(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	namespace := "cri"
+	if v, ok := args["namespace"].(string); ok && v != "" {
+		namespace = v
+	}
+	driver := common.ContainerDriver_CRI
+	if namespace == "system" {
+		driver = common.ContainerDriver_CONTAINERD
+	}
+
+	resp, err := c.Stats(nCtx, namespace, driver)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("stats failed: %v", err)), nil
+	}
+	return jsonResult(resp)
+}
+
+func handleLS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	path, _ := args["path"].(string)
+	if path == "" {
+		path = "/"
+	}
+	recurse, _ := args["recurse"].(bool)
+
+	recursionDepth := int32(0)
+	if recurse {
+		recursionDepth = 1
+	}
+
+	stream, err := c.LS(nCtx, &machine.ListRequest{
+		Root:           path,
+		RecursionDepth: recursionDepth,
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("list failed: %v", err)), nil
+	}
+
+	var files []map[string]any
+	for {
+		info, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("list stream failed: %v", err)), nil
+		}
+		if info.GetError() != "" {
+			continue
+		}
+		files = append(files, map[string]any{
+			"name":     info.GetRelativeName(),
+			"size":     info.GetSize(),
+			"mode":     fmt.Sprintf("%o", info.GetMode()),
+			"modified": time.Unix(info.GetModified(), 0).Format(time.RFC3339),
+			"is_dir":   info.GetIsDir(),
+		})
+	}
+	return jsonResult(files)
+}
+
+func handleRead(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	path, _ := args["path"].(string)
+
+	reader, err := c.Read(nCtx, path)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("read failed: %v", err)), nil
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("read stream failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+func handleDiskUsage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	path, _ := args["path"].(string)
+	if path == "" {
+		path = "/"
+	}
+
+	stream, err := c.DiskUsage(nCtx, &machine.DiskUsageRequest{
+		RecursionDepth: 1,
+		Paths:          []string{path},
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("disk usage failed: %v", err)), nil
+	}
+
+	var entries []map[string]any
+	for {
+		info, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("disk usage stream failed: %v", err)), nil
+		}
+		if info.GetError() != "" {
+			continue
+		}
+		entries = append(entries, map[string]any{
+			"name":          info.GetName(),
+			"relative_name": info.GetRelativeName(),
+			"size":          info.GetSize(),
+		})
+	}
+	return jsonResult(entries)
+}
+
+func handleTime(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	var resp *timeapi.TimeResponse
+	args := req.GetArguments()
+	if server, ok := args["server"].(string); ok && server != "" {
+		resp, err = c.TimeCheck(nCtx, server)
+	} else {
+		resp, err = c.Time(nCtx)
+	}
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("time failed: %v", err)), nil
+	}
+	return jsonResult(resp)
+}
+
+func handleWipe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	device, _ := args["device"].(string)
+
+	if err := c.BlockDeviceWipe(nCtx, &storage.BlockDeviceWipeRequest{
+		Devices: []*storage.BlockDeviceWipeDescriptor{
+			{Device: device},
+		},
+	}); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("wipe failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Device %s wiped.", device)), nil
 }

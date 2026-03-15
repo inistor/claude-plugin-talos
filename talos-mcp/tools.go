@@ -189,6 +189,102 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleEtcdStatus)
 
+	s.AddTool(mcp.NewTool("talos_etcd_remove_member",
+		mcp.WithDescription("Remove an etcd member by ID. Get member IDs from talos_etcd_members first. Required before resetting a control plane node."),
+		mcp.WithNumber("member_id", mcp.Required(), mcp.Description("Etcd member ID to remove")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleEtcdRemoveMember)
+
+	s.AddTool(mcp.NewTool("talos_etcd_forfeit_leadership",
+		mcp.WithDescription("Make the current etcd leader forfeit its leadership. Useful before maintenance on the leader node."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleEtcdForfeitLeadership)
+
+	s.AddTool(mcp.NewTool("talos_etcd_leave",
+		mcp.WithDescription("Make a node leave the etcd cluster gracefully."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleEtcdLeave)
+
+	s.AddTool(mcp.NewTool("talos_etcd_alarm",
+		mcp.WithDescription("List etcd alarms (e.g. NOSPACE when DB is full)."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleEtcdAlarm)
+
+	s.AddTool(mcp.NewTool("talos_kubeconfig",
+		mcp.WithDescription("Retrieve the admin kubeconfig for the cluster. Returns the kubeconfig YAML content."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleKubeconfig)
+
+	// --- Additional operations ---
+
+	s.AddTool(mcp.NewTool("talos_rollback",
+		mcp.WithDescription("Rollback a node to the previous Talos version (reverts a failed upgrade using the A/B partition scheme)."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleRollback)
+
+	s.AddTool(mcp.NewTool("talos_service_restart",
+		mcp.WithDescription("Restart a specific service on a node."),
+		mcp.WithString("service", mcp.Required(), mcp.Description("Service name to restart (e.g. kubelet, etcd, containerd)")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleServiceRestart)
+
+	s.AddTool(mcp.NewTool("talos_image_list",
+		mcp.WithDescription("List cached container images on a node."),
+		mcp.WithString("namespace", mcp.Description("Containerd namespace: cri (default), system")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleImageList)
+
+	s.AddTool(mcp.NewTool("talos_stats",
+		mcp.WithDescription("Get container runtime stats (CPU, memory usage per container)."),
+		mcp.WithString("namespace", mcp.Description("Container namespace: cri (default), system")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleStats)
+
+	s.AddTool(mcp.NewTool("talos_ls",
+		mcp.WithDescription("List files and directories on a node's filesystem."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Directory path to list")),
+		mcp.WithBoolean("recurse", mcp.Description("List one level of subdirectories")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleLS)
+
+	s.AddTool(mcp.NewTool("talos_read",
+		mcp.WithDescription("Read a file from a node's filesystem."),
+		mcp.WithString("path", mcp.Required(), mcp.Description("File path to read")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleRead)
+
+	s.AddTool(mcp.NewTool("talos_disk_usage",
+		mcp.WithDescription("Get disk usage for a path on a node (like df/du)."),
+		mcp.WithString("path", mcp.Description("Path to check (default: /)")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleDiskUsage)
+
+	s.AddTool(mcp.NewTool("talos_time",
+		mcp.WithDescription("Get current time and NTP sync status from a node."),
+		mcp.WithString("server", mcp.Description("Optional NTP server to check against")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleTime)
+
+	s.AddTool(mcp.NewTool("talos_wipe",
+		mcp.WithDescription("Wipe a block device on a node. DESTRUCTIVE — use with caution."),
+		mcp.WithString("device", mcp.Required(), mcp.Description("Device name without /dev/ prefix (e.g. sdb, nvme0n1)")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handleWipe)
+
 	// --- COSI resource tools (semantic wrappers around talos_get) ---
 
 	s.AddTool(mcp.NewTool("talos_volumes",
