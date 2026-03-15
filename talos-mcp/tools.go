@@ -214,6 +214,15 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleEtcdAlarm)
 
+	s.AddTool(mcp.NewTool("talos_patch",
+		mcp.WithDescription("Patch the running machine configuration on a node. Fetches the current config, applies a strategic merge patch, and sends it back. Like 'talosctl patch machineconfig'."),
+		mcp.WithString("patch", mcp.Required(), mcp.Description("Strategic merge patch YAML to apply to the machine config")),
+		mcp.WithString("mode", mcp.Description("Apply mode: auto (default), no-reboot, reboot, staged, try")),
+		mcp.WithBoolean("dry_run", mcp.Description("Preview the change without applying")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), handlePatch)
+
 	s.AddTool(mcp.NewTool("talos_kubeconfig",
 		mcp.WithDescription("Retrieve the admin kubeconfig for the cluster. Returns the kubeconfig YAML content."),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),

@@ -21,6 +21,7 @@ import (
 	timeapi "github.com/siderolabs/talos/pkg/machinery/api/time"
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
+	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -826,6 +827,87 @@ func handleEtcdStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	resp, err := c.EtcdStatus(nCtx)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("etcd status failed: %v", err)), nil
+	}
+	return jsonResult(resp)
+}
+
+func handlePatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	patchYAML, _ := args["patch"].(string)
+	mode, _ := args["mode"].(string)
+	dryRun, _ := args["dry_run"].(bool)
+
+	// 1. Get current machine config from node via COSI
+	namespace := ""
+	rd, err := c.ResolveResourceKind(nCtx, &namespace, "mc")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("resolve mc type failed: %v", err)), nil
+	}
+
+	items, err := c.COSI.List(nCtx,
+		resource.NewMetadata(rd.TypedSpec().DefaultNamespace, rd.TypedSpec().Type, "", resource.VersionUndefined),
+	)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("get machine config failed: %v", err)), nil
+	}
+	if len(items.Items) == 0 {
+		return mcp.NewToolResultError("no machine config found on node"), nil
+	}
+
+	// The machine config spec comes as a YAML string via the COSI protobuf layer.
+	// Marshal it, then if the result is a quoted YAML string, unwrap it.
+	configYAMLBytes, err := yaml.Marshal(items.Items[0].Spec())
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("marshal config failed: %v", err)), nil
+	}
+	// yaml.Marshal wraps a plain string in quotes — try to unwrap
+	var asString string
+	if yaml.Unmarshal(configYAMLBytes, &asString) == nil && strings.HasPrefix(asString, "version:") {
+		configYAMLBytes = []byte(asString)
+	}
+
+	// 2. Load and apply the patch
+	patch, err := configpatcher.LoadPatch([]byte(patchYAML))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid patch: %v", err)), nil
+	}
+
+	output, err := configpatcher.Apply(configpatcher.WithBytes(configYAMLBytes), []configpatcher.Patch{patch})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("apply patch failed: %v", err)), nil
+	}
+
+	patchedBytes, err := output.Bytes()
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("encode patched config failed: %v", err)), nil
+	}
+
+	// 3. Apply the patched config
+	applyMode := machine.ApplyConfigurationRequest_AUTO
+	switch strings.ToLower(mode) {
+	case "no-reboot":
+		applyMode = machine.ApplyConfigurationRequest_NO_REBOOT
+	case "reboot":
+		applyMode = machine.ApplyConfigurationRequest_REBOOT
+	case "staged":
+		applyMode = machine.ApplyConfigurationRequest_STAGED
+	case "try":
+		applyMode = machine.ApplyConfigurationRequest_TRY
+	}
+
+	resp, err := c.ApplyConfiguration(nCtx, &machine.ApplyConfigurationRequest{
+		Data:   patchedBytes,
+		Mode:   applyMode,
+		DryRun: dryRun,
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("apply patched config failed: %v", err)), nil
 	}
 	return jsonResult(resp)
 }

@@ -31,7 +31,6 @@ Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 
 **Operations requiring `talosctl`** (no MCP equivalent — use via Bash):
 - `talosctl gen secrets` / `talosctl gen config` — generate cluster configuration
-- `talosctl machineconfig patch` — apply strategic merge patches to configs
 
 ## Talosconfig
 
@@ -53,7 +52,7 @@ Key components: `machined` (init), `apid` (API gateway), `trustd` (certificate a
 
 **Config**: `talos_set_config`, `talos_config_info`, `talos_machine_config`
 **Cluster**: `talos_bootstrap`, `talos_health`, `talos_version`, `talos_members`, `talos_kubeconfig`, `talos_get`
-**Node**: `talos_apply_config`, `talos_reboot`, `talos_shutdown`, `talos_reset`, `talos_upgrade`, `talos_rollback`, `talos_wipe`
+**Node**: `talos_apply_config`, `talos_patch`, `talos_reboot`, `talos_shutdown`, `talos_reset`, `talos_upgrade`, `talos_rollback`, `talos_wipe`
 **Services**: `talos_services`, `talos_service_restart`, `talos_containers`, `talos_stats`, `talos_image_list`
 **Diagnostics**: `talos_logs`, `talos_dmesg`, `talos_processes`
 **System**: `talos_disks`, `talos_mounts`, `talos_memory`, `talos_cpu`, `talos_disk_usage`, `talos_time`
@@ -74,7 +73,7 @@ Generate configs: `talosctl gen config <cluster-name> <endpoint>` (via Bash)
 
 Apply configs: `talos_apply_config(config, mode)` — modes: `auto` (default), `no-reboot`, `staged`, `try`
 
-Modify configs with **strategic merge patches**. Use `$patch: delete` to remove fields. Multi-document YAML for multiple patches. See `references/machine-config.md` for full v1alpha1 structure.
+Modify running configs with `talos_patch(patch, node)` — applies a strategic merge patch to the node's live config. Use `$patch: delete` to remove fields. Use `dry_run: true` to preview changes. See `references/machine-config.md` for full v1alpha1 structure.
 
 ## Cluster Lifecycle
 
