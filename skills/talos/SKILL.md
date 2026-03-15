@@ -42,6 +42,8 @@ The Talos client config lives at `~/.talos/config` (or `$TALOSCONFIG`). It conta
 
 **Before any Talos operation**, check if a local `talosconfig` file exists in the current working directory or project root. If found, base64-encode it via Bash (`base64 < talosconfig`) and call `talos_set_config(content)` with the base64 output. This preserves the exact file formatting (long base64 cert lines must not be wrapped). This is critical when working in project directories that have their own cluster configs.
 
+**Common TLS error**: If you see `x509: certificate signed by unknown authority` or `Ed25519 verification failure`, this does NOT mean the certificates are incompatible. It means the **talosconfig does not match the cluster** — wrong config for the target cluster, stale config from a rebuilt cluster, or `talos_set_config` was not called. Fix: verify the correct talosconfig is loaded, re-run `talos_set_config` with the right file.
+
 **Single-cluster per session**: The MCP server is stateful — `talos_set_config` sets the config for ALL subsequent calls in the session. It cannot operate on multiple clusters in parallel. To switch clusters, call `talos_set_config` again with the new config content. Use the `context` parameter on individual tools to switch between contexts within the same talosconfig.
 
 ## Talos Overview
