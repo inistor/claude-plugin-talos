@@ -188,4 +188,77 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleEtcdStatus)
+
+	// --- COSI resource tools (semantic wrappers around talos_get) ---
+
+	s.AddTool(mcp.NewTool("talos_volumes",
+		mcp.WithDescription("List volume statuses on a node (mount points, sizes, labels, provisioning state)."),
+		mcp.WithString("id", mcp.Description("Optional volume ID")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("volumestatuses"))
+
+	s.AddTool(mcp.NewTool("talos_discovered_volumes",
+		mcp.WithDescription("List discovered block devices and partitions (dev path, size, filesystem, label, bus path)."),
+		mcp.WithString("id", mcp.Description("Optional device ID (e.g. sda, sda1)")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("discoveredvolumes"))
+
+	s.AddTool(mcp.NewTool("talos_addresses",
+		mcp.WithDescription("List IP addresses assigned to network interfaces on a node."),
+		mcp.WithString("id", mcp.Description("Optional address ID")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("addresses"))
+
+	s.AddTool(mcp.NewTool("talos_routes",
+		mcp.WithDescription("List routing table entries on a node."),
+		mcp.WithString("id", mcp.Description("Optional route ID")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("routes"))
+
+	s.AddTool(mcp.NewTool("talos_interfaces",
+		mcp.WithDescription("List network interfaces (links) on a node — status, MTU, speed, hardware addr."),
+		mcp.WithString("id", mcp.Description("Optional interface name")),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("links"))
+
+	s.AddTool(mcp.NewTool("talos_cpu",
+		mcp.WithDescription("Get CPU usage statistics from a node."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("cpustat"))
+
+	s.AddTool(mcp.NewTool("talos_extensions",
+		mcp.WithDescription("List installed system extensions on a node."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("extensions"))
+
+	s.AddTool(mcp.NewTool("talos_machine_config",
+		mcp.WithDescription("Get the running machine configuration from a node (v1alpha1 YAML)."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("mc"))
+
+	s.AddTool(mcp.NewTool("talos_members",
+		mcp.WithDescription("List cluster members (discovered via Talos discovery service)."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("members"))
+
+	s.AddTool(mcp.NewTool("talos_resolvers",
+		mcp.WithDescription("List configured DNS resolvers on a node."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("resolvers"))
+
+	s.AddTool(mcp.NewTool("talos_hostname",
+		mcp.WithDescription("Get the hostname of a node."),
+		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
+		mcp.WithString("context", mcp.Description("Talosconfig context name")),
+	), resourceHandler("hostname"))
 }

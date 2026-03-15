@@ -139,19 +139,9 @@ func handleConfigInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 
 // --- Resource operations ---
 
-func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	c, nCtx, err := setupClient(ctx, req)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	defer c.Close()
-
-	args := req.GetArguments()
-	resourceType, _ := args["resource_type"].(string)
-	resourceID, _ := args["resource_id"].(string)
-	namespace, _ := args["namespace"].(string)
-
-	// Resolve aliases (e.g. "mc" -> "MachineConfigs.config.talos.dev")
+// getResource lists or gets COSI resources by type alias. Shared by handleGet and dedicated resource tools.
+func getResource(c *client.Client, nCtx context.Context, resourceType, resourceID string) (*mcp.CallToolResult, error) {
+	namespace := ""
 	rd, err := c.ResolveResourceKind(nCtx, &namespace, resourceType)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("resolve resource type failed: %v", err)), nil
@@ -161,7 +151,6 @@ func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	resolvedNs := rd.TypedSpec().DefaultNamespace
 
 	if resourceID != "" {
-		// Get a specific resource
 		r, err := c.COSI.Get(nCtx,
 			resource.NewMetadata(resolvedNs, resolvedType, resourceID, resource.VersionUndefined),
 		)
@@ -171,7 +160,6 @@ func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		return jsonResult(resourceToMap(r))
 	}
 
-	// List all resources of this type
 	items, err := c.COSI.List(nCtx,
 		resource.NewMetadata(resolvedNs, resolvedType, "", resource.VersionUndefined),
 	)
@@ -184,6 +172,36 @@ func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		results = append(results, resourceToMap(r))
 	}
 	return jsonResult(results)
+}
+
+func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	resourceType, _ := args["resource_type"].(string)
+	resourceID, _ := args["resource_id"].(string)
+
+	return getResource(c, nCtx, resourceType, resourceID)
+}
+
+// resourceHandler returns an MCP handler for a fixed COSI resource type.
+func resourceHandler(resourceType string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		c, nCtx, err := setupClient(ctx, req)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		defer c.Close()
+
+		args := req.GetArguments()
+		resourceID, _ := args["id"].(string)
+
+		return getResource(c, nCtx, resourceType, resourceID)
+	}
 }
 
 // resourceToMap converts a COSI resource to a JSON-friendly map.
