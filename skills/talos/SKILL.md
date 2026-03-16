@@ -71,14 +71,22 @@ Talos uses a single YAML configuration file (v1alpha1) with two top-level sectio
 
 Generate configs: `talosctl gen config <cluster-name> <endpoint>` (via Bash)
 
-Apply configs: `talos_apply_config(config, mode)` — modes: `auto` (default), `no-reboot`, `staged`, `try`
+Apply configs: `talos_apply_config(config, mode)` — requires the FULL machine configuration YAML. For partial changes, use `talos_patch` instead. Modes: `auto` (default), `no-reboot`, `reboot`, `staged`, `try`. Use `insecure: true` for nodes in maintenance mode.
 
 Modify running configs with `talos_patch(patch, node)` — applies a strategic merge patch to the node's live config. Use `$patch: delete` to remove fields. Use `dry_run: true` to preview changes. See `references/machine-config.md` for full v1alpha1 structure.
 
 ## Cluster Lifecycle
 
 ### Bootstrap
-1. Generate configs (talosctl) → 2. Apply controlplane config (`talos_apply_config`) → 3. Apply worker config → 4. `talos_bootstrap` on ONE CP node → 5. `talos_health` → 6. `talos_kubeconfig`
+1. `talosctl gen secrets -o secrets.yaml` (via Bash)
+2. `talosctl gen config <cluster-name> <endpoint> --with-secrets secrets.yaml` (via Bash)
+3. Apply CP config to each CP node: `talos_apply_config(config, node, insecure=true)` — fresh nodes are in maintenance mode, requires `insecure: true`
+4. Apply worker config to each worker: `talos_apply_config(config, node, insecure=true)`
+5. `talos_bootstrap(node)` on ONE CP node only
+6. `talos_health` — verify cluster is up
+7. `talos_kubeconfig` — retrieve kubeconfig
+
+**Note**: `talos_version`, `talos_disks`, and `talos_apply_config` support `insecure: true` for nodes in maintenance mode (before bootstrap).
 
 ### Upgrade Talos
 1. Check current versions (`talos_version`) → 2. Verify health (`talos_health`) → 3. Snapshot etcd (`talos_etcd_snapshot`) → 4. Upgrade CP nodes one at a time (`talos_upgrade`) → 5. Upgrade workers → 6. Verify health
@@ -169,8 +177,8 @@ When diagnosing issues, follow this order:
 
 1. `talos_health` — overall cluster health
 2. `talos_services` — check service states
-3. `talos_logs(service)` — service-specific logs (kubelet, etcd, apid, machined)
-4. `talos_dmesg` — kernel logs
+3. `talos_logs(service, filter)` — service-specific logs, use `filter` to search for specific text
+4. `talos_dmesg(filter)` — kernel logs, use `filter` to search for specific drivers/errors
 5. `talos_etcd_members` + `talos_etcd_status` + `talos_etcd_alarm` — etcd health
 6. Kubernetes MCP: pods, events, node status
 7. `talos_memory`, `talos_cpu`, `talos_disk_usage` — resource pressure

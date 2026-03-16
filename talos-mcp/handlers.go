@@ -26,17 +26,31 @@ import (
 )
 
 // helper to extract common params
-func extractParams(req mcp.CallToolRequest) (node, ctxName string) {
+func extractParams(req mcp.CallToolRequest) (node, ctxName string, insecure bool) {
 	args := req.GetArguments()
 	node, _ = args["node"].(string)
 	ctxName, _ = args["context"].(string)
+	insecure, _ = args["insecure"].(bool)
 	return
 }
 
 // helper to create client and node context
 func setupClient(ctx context.Context, req mcp.CallToolRequest) (*client.Client, context.Context, error) {
-	node, ctxName := extractParams(req)
-	c, err := newClient(ctx, ctxName)
+	node, ctxName, insecure := extractParams(req)
+
+	var (
+		c   *client.Client
+		err error
+	)
+
+	if insecure {
+		if node == "" {
+			return nil, nil, fmt.Errorf("node is required for insecure mode")
+		}
+		c, err = newInsecureClient(ctx, node)
+	} else {
+		c, err = newClient(ctx, ctxName)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -58,7 +72,8 @@ type byteStream interface {
 }
 
 // collectStream reads all data from a byte stream, stopping at EOF.
-func collectStream(stream byteStream) (string, error) {
+// If filter is non-empty, only lines containing the filter string are included.
+func collectStream(stream byteStream, filter string) (string, error) {
 	var lines []string
 	for {
 		data, err := stream.Recv()
@@ -68,7 +83,16 @@ func collectStream(stream byteStream) (string, error) {
 			}
 			return "", err
 		}
-		lines = append(lines, string(data.GetBytes()))
+		chunk := string(data.GetBytes())
+		if filter == "" {
+			lines = append(lines, chunk)
+		} else {
+			for _, line := range strings.Split(chunk, "\n") {
+				if strings.Contains(line, filter) {
+					lines = append(lines, line+"\n")
+				}
+			}
+		}
 	}
 	return strings.Join(lines, ""), nil
 }
@@ -428,6 +452,14 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		}
 	}
 
+	// system_labels_to_wipe: selective partition wipe by label
+	if labels, ok := args["system_labels_to_wipe"].(string); ok && labels != "" {
+		for _, label := range strings.Split(labels, ",") {
+			resetReq.SystemPartitionsToWipe = append(resetReq.SystemPartitionsToWipe,
+				&machine.ResetPartitionSpec{Label: strings.TrimSpace(label)})
+		}
+	}
+
 	if err := c.ResetGeneric(nCtx, resetReq); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("reset failed: %v", err)), nil
 	}
@@ -486,12 +518,14 @@ func handleLogs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		driver = common.ContainerDriver_CRI
 	}
 
+	filter, _ := args["filter"].(string)
+
 	stream, err := c.Logs(nCtx, namespace, driver, service, false, tailLines)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("logs failed: %v", err)), nil
 	}
 
-	output, err := collectStream(stream)
+	output, err := collectStream(stream, filter)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("logs stream failed: %v", err)), nil
 	}
@@ -507,13 +541,14 @@ func handleDmesg(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 
 	args := req.GetArguments()
 	tail, _ := args["tail"].(bool)
+	filter, _ := args["filter"].(string)
 
 	stream, err := c.Dmesg(nCtx, false, tail)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("dmesg failed: %v", err)), nil
 	}
 
-	output, err := collectStream(stream)
+	output, err := collectStream(stream, filter)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("dmesg stream failed: %v", err)), nil
 	}
@@ -1091,6 +1126,7 @@ func handleLS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult
 		path = "/"
 	}
 	recurse, _ := args["recurse"].(bool)
+	pattern, _ := args["pattern"].(string)
 
 	recursionDepth := int32(0)
 	if recurse {
@@ -1117,8 +1153,12 @@ func handleLS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult
 		if info.GetError() != "" {
 			continue
 		}
+		name := info.GetRelativeName()
+		if pattern != "" && !strings.Contains(name, pattern) {
+			continue
+		}
 		files = append(files, map[string]any{
-			"name":     info.GetRelativeName(),
+			"name":     name,
 			"size":     info.GetSize(),
 			"mode":     fmt.Sprintf("%o", info.GetMode()),
 			"modified": time.Unix(info.GetModified(), 0).Format(time.RFC3339),

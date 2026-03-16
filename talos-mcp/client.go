@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"os"
 	"sync"
 
@@ -57,6 +58,16 @@ func newClient(ctx context.Context, contextName string) (*client.Client, error) 
 		opts = append(opts, client.WithContextName(contextName))
 	}
 	return client.New(ctx, opts...)
+}
+
+// newInsecureClient creates a Talos client for maintenance mode (no TLS auth).
+// The node IP is used directly as the endpoint.
+func newInsecureClient(ctx context.Context, node string) (*client.Client, error) {
+	tlsConfig := &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	return client.New(ctx,
+		client.WithTLSConfig(tlsConfig),
+		client.WithEndpoints(node),
+	)
 }
 
 // nodeCtx returns a context targeting a specific node.

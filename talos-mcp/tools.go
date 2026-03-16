@@ -48,6 +48,7 @@ func registerTools(s *server.MCPServer) {
 	s.AddTool(mcp.NewTool("talos_version",
 		mcp.WithDescription("Get Talos and Kubernetes version info from a node."),
 		mcp.WithBoolean("short", mcp.Description("Print short version string only")),
+		mcp.WithBoolean("insecure", mcp.Description("Use insecure mode for maintenance/bootstrap (no TLS auth)")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleVersion)
@@ -55,11 +56,11 @@ func registerTools(s *server.MCPServer) {
 	// --- Node operations ---
 
 	s.AddTool(mcp.NewTool("talos_apply_config",
-		mcp.WithDescription("Apply machine configuration to a node. Config is YAML string."),
-		mcp.WithString("config", mcp.Required(), mcp.Description("Machine configuration YAML")),
+		mcp.WithDescription("Apply FULL machine configuration to a node. Requires the complete config YAML (not a patch). For partial changes, use talos_patch instead."),
+		mcp.WithString("config", mcp.Required(), mcp.Description("Complete machine configuration YAML")),
 		mcp.WithString("mode", mcp.Description("Apply mode: auto, no-reboot, reboot, staged, try (default: auto)")),
 		mcp.WithBoolean("dry_run", mcp.Description("Check how the config change will be applied without actually applying")),
-		mcp.WithString("timeout", mcp.Description("Rollback timeout for try mode (e.g. '1m', '5m'). Default: 1m")),
+		mcp.WithBoolean("insecure", mcp.Description("Use insecure mode for maintenance/bootstrap (no TLS auth)")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleApplyConfig)
@@ -83,6 +84,7 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithBoolean("graceful", mcp.Description("Graceful reset with cordon/drain and etcd leave (default: true)")),
 		mcp.WithBoolean("reboot", mcp.Description("Reboot after reset instead of shutting down (default: false)")),
 		mcp.WithString("wipe_mode", mcp.Description("Wipe mode: all (default), system-disk, user-disks")),
+		mcp.WithString("system_labels_to_wipe", mcp.Description("Comma-separated partition labels to wipe selectively (e.g. 'u-nvme,EPHEMERAL')")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleReset)
@@ -103,6 +105,7 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithDescription("Get service logs from a node."),
 		mcp.WithString("service", mcp.Required(), mcp.Description("Service name (e.g. kubelet, etcd, apid, machined)")),
 		mcp.WithNumber("tail_lines", mcp.Description("Number of lines from the end (default: 100)")),
+		mcp.WithString("filter", mcp.Description("Filter string — only return log lines containing this text")),
 		mcp.WithBoolean("kubernetes", mcp.Description("Use the k8s.io containerd namespace")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
@@ -111,6 +114,7 @@ func registerTools(s *server.MCPServer) {
 	s.AddTool(mcp.NewTool("talos_dmesg",
 		mcp.WithDescription("Get kernel logs (dmesg) from a node."),
 		mcp.WithBoolean("tail", mcp.Description("Only return recent messages (useful for large dmesg output). Without this, returns all messages since boot.")),
+		mcp.WithString("filter", mcp.Description("Filter string — only return lines containing this text")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleDmesg)
@@ -139,6 +143,7 @@ func registerTools(s *server.MCPServer) {
 
 	s.AddTool(mcp.NewTool("talos_disks",
 		mcp.WithDescription("List disks on a node."),
+		mcp.WithBoolean("insecure", mcp.Description("Use insecure mode for maintenance/bootstrap (no TLS auth)")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleDisks)
@@ -262,6 +267,7 @@ func registerTools(s *server.MCPServer) {
 		mcp.WithDescription("List files and directories on a node's filesystem."),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Directory path to list")),
 		mcp.WithBoolean("recurse", mcp.Description("List one level of subdirectories")),
+		mcp.WithString("pattern", mcp.Description("Filter — only return entries whose name contains this string")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleLS)
