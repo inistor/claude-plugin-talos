@@ -34,12 +34,13 @@ Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from
 
 ## Kubernetes Upgrade
 
-1. Upgrade is done via machine config patch — update the `cluster.apiServer.image`, `cluster.controllerManager.image`, `cluster.scheduler.image` fields
-2. Apply config to control plane nodes using `mcp__talos__talos_apply_config`
-3. Monitor Kubernetes component rollout via Kubernetes MCP
+Kubernetes upgrades use `talosctl upgrade-k8s` — a complex client-side orchestration that patches configs, pre-pulls images, and monitors rollout across all nodes.
+
+1. **Pre-flight:** Create etcd snapshot via `mcp__talos__talos_etcd_snapshot`
+2. **Run:** `talosctl upgrade-k8s --to <version>` via Bash
+3. **Verify:** Check node versions via Bash (`kubectl get nodes`), check cluster health via `mcp__talos__talos_health`
 
 **Important:**
-- Always upgrade control plane nodes before workers
 - Always create an etcd snapshot before starting
-- Never upgrade all control plane nodes simultaneously
-- Use `yq` for YAML manipulation, not sed/grep
+- Do NOT attempt to replicate the K8s upgrade manually with `talos_patch` — use `talosctl upgrade-k8s`
+- Add `--dry-run` first to preview the upgrade plan

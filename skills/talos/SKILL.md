@@ -31,6 +31,7 @@ Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 
 **Operations requiring `talosctl`** (no MCP equivalent — use via Bash):
 - `talosctl gen secrets` / `talosctl gen config` — generate cluster configuration
+- `talosctl upgrade-k8s --to <version>` — Kubernetes version upgrade (complex orchestration: patches configs, pre-pulls images, monitors rollout across all nodes)
 
 ## Talosconfig
 
@@ -94,14 +95,7 @@ Modify running configs with `talos_patch(patch, node)` — applies a strategic m
 If an upgrade fails, use `talos_rollback` to revert to the previous version (A/B partition scheme).
 
 ### Upgrade Kubernetes
-Done via machine config patch — update these image tags to the target K8s version:
-- `cluster.apiServer.image` (kube-apiserver)
-- `cluster.controllerManager.image` (kube-controller-manager)
-- `cluster.scheduler.image` (kube-scheduler)
-- `cluster.proxy.image` (kube-proxy)
-- `machine.kubelet.image` (kubelet)
-
-Apply the patch to all control plane nodes via `talos_apply_config`. Workers pick up kubelet changes when their config is updated. Monitor rollout via Kubernetes MCP.
+Use `talosctl upgrade-k8s --to <version>` via Bash. This is a complex client-side orchestration that patches all nodes' configs, pre-pulls images, and monitors rollout. Do NOT attempt to replicate this manually with `talos_patch` — use the talosctl command directly.
 
 ### Scale Up
 Generate worker config for the cluster, apply to new node. It joins automatically via discovery.
