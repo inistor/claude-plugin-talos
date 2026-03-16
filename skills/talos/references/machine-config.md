@@ -214,3 +214,9 @@ machine:
 ```
 
 Multi-document patches (separate with `---`) apply in order.
+
+**Merge exceptions** — these fields have non-standard merge behavior:
+- `cluster.network.podSubnets` / `serviceSubnets` — **overwritten**, not appended
+- `network.interfaces` — merged by matching `interface:` or `deviceSelector:` key
+- `network.interfaces.vlans` — merged by matching `vlanId:`
+- `cluster.apiServer.auditPolicy` — replaced entirely

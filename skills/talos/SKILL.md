@@ -84,27 +84,31 @@ Modify running configs with `talos_patch(patch, node)` — applies a strategic m
 3. Apply CP config to each CP node: `talos_apply_config(config, node, insecure=true)` — fresh nodes are in maintenance mode, requires `insecure: true`
 4. Apply worker config to each worker: `talos_apply_config(config, node, insecure=true)`
 5. `talos_bootstrap(node)` on ONE CP node only
-6. `talos_health` — verify cluster is up
-7. `talos_kubeconfig` — retrieve kubeconfig
+6. `talos_kubeconfig` — retrieve kubeconfig (needed for health check)
+7. `talos_health` — verify cluster is up
 
-**Note**: `talos_version`, `talos_disks`, and `talos_apply_config` support `insecure: true` for nodes in maintenance mode (before bootstrap).
+**Note**: `talos_version`, `talos_disks`, `talos_get`, and `talos_apply_config` support `insecure: true` for nodes in maintenance mode. Stop using `insecure` once the machine config is applied.
 
 ### Upgrade Talos
-1. Check current versions (`talos_version`) → 2. Verify health (`talos_health`) → 3. Snapshot etcd (`talos_etcd_snapshot`) → 4. Upgrade CP nodes one at a time (`talos_upgrade`) → 5. Upgrade workers → 6. Verify health
+1. Check current versions (`talos_version`) → 2. Verify health (`talos_health`) → 3. Snapshot etcd (recommended: `talos_etcd_snapshot`) → 4. Upgrade CP nodes (`talos_upgrade`) → 5. Upgrade workers → 6. Verify health
 
-If an upgrade fails, use `talos_rollback` to revert to the previous version (A/B partition scheme).
+**Important upgrade rules:**
+- **Version path**: Must upgrade through all intermediate minor releases (e.g., 1.10 → 1.11 → 1.12, not 1.10 → 1.12 directly)
+- **CP serialization**: Talos automatically serializes CP upgrades and refuses if etcd quorum would be lost — no need to manually enforce one-at-a-time
+- **Automatic rollback**: If the upgraded system fails to boot, the A/B bootloader automatically reverts. Manual `talos_rollback` is for reverting a successful but unwanted upgrade
+- **Staged upgrades**: Use `stage: true` if in-place upgrade can't unmount filesystems
 
 ### Upgrade Kubernetes
-Use `talosctl upgrade-k8s --to <version>` via Bash. This is a complex client-side orchestration that patches all nodes' configs, pre-pulls images, and monitors rollout. Do NOT attempt to replicate this manually with `talos_patch` — use the talosctl command directly.
+Use `talosctl upgrade-k8s --to <version>` via Bash. This is a complex client-side orchestration that patches all nodes' configs, pre-pulls images, and monitors rollout. Do NOT attempt to replicate this manually with `talos_patch` — use the talosctl command directly. Use `--dry-run` first to preview the plan. The command is resumable if interrupted.
 
 ### Scale Up
 Generate worker config for the cluster, apply to new node. It joins automatically via discovery.
 
 ### Scale Down
-For workers: `talos_reset(node)`. For CP nodes: first `talos_etcd_forfeit_leadership` (if leader), then `talos_etcd_leave` or `talos_etcd_remove_member(member_id)`, then `talos_reset(node)`.
+For workers: `talos_reset(node)`, then `kubectl delete node <name>` via Bash. For CP nodes: `talos_reset(node, graceful=true)` handles etcd departure automatically, then `kubectl delete node <name>`. Manual etcd leave/remove (`talos_etcd_forfeit_leadership`, `talos_etcd_leave`) is only needed for non-graceful resets or edge cases.
 
 ### Reset
-`talos_reset(node, graceful=true)` — wipes the node back to maintenance mode. Always remove from etcd first for CP nodes.
+`talos_reset(node, graceful=true)` — cordon/drain, leave etcd if CP node, wipe disks, power down. After reset, delete the Kubernetes node object: `kubectl delete node <name>` via Bash.
 
 ## Boot Assets & Images
 
@@ -185,7 +189,13 @@ See `references/troubleshooting.md` for common issues and solutions.
 
 ## Disaster Recovery
 
-1. **etcd snapshot restore**: `talosctl bootstrap --recover-from=<snapshot>`
-2. **Config backup**: always keep generated secrets/configs in a safe location
-3. **Single CP node recovery**: reset and re-apply config, bootstrap if etcd is lost
-4. **Multi-CP recovery**: restore from etcd snapshot on one node, other nodes rejoin
+1. **Before full DR**: Check if etcd quorum can be restored first (simpler than full recovery)
+2. **etcd snapshot restore**:
+   - Wipe EPHEMERAL partition: `talos_reset(node, graceful=false, reboot=true, system_labels_to_wipe="EPHEMERAL")`
+   - Wait for etcd to reach "Preparing" state
+   - `talosctl bootstrap --recover-from=<snapshot>` (via Bash)
+   - If snapshot was copied from disk (not via `talos_etcd_snapshot`), add `--recover-skip-hash-check`
+3. **Alternative snapshot method** (when quorum is lost and normal snapshot fails): `talosctl cp /var/lib/etcd/member/snap/db .` via Bash
+4. **Config backup**: always keep generated secrets/configs in a safe location
+5. **Single CP node recovery**: reset and re-apply config, bootstrap if etcd is lost
+6. **Multi-CP recovery**: restore from etcd snapshot on one node, other nodes rejoin
