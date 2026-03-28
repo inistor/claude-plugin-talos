@@ -17,8 +17,9 @@ if command -v yq &>/dev/null; then
 
   # Persist context info as env vars
   if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-    echo "export TALOS_CONTEXT=$CONTEXT" >> "$CLAUDE_ENV_FILE"
-    echo "export TALOS_ENDPOINTS=$ENDPOINTS" >> "$CLAUDE_ENV_FILE"
+    echo "export TALOS_CONTEXT=\"${CONTEXT}\"" >> "$CLAUDE_ENV_FILE"
+    echo "export TALOS_ENDPOINTS=\"${ENDPOINTS}\"" >> "$CLAUDE_ENV_FILE"
+    echo "export TALOS_NODES=\"${NODES}\"" >> "$CLAUDE_ENV_FILE"
   fi
 
   echo "{\"systemMessage\": \"Talos context: ${CONTEXT} | Endpoints: ${ENDPOINTS} | Nodes: ${NODES}\"}"
