@@ -25,6 +25,7 @@ import (
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
 	"go.yaml.in/yaml/v4"
+	"k8s.io/client-go/kubernetes"
 )
 
 // helper to extract common params
@@ -522,10 +523,139 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		return mcp.NewToolResultError(fmt.Sprintf("version probe failed: %v", err)), nil
 	}
 
-	if useLifecycle {
-		return upgradeViaLifecycleService(nCtx, c, image, tag, autoReboot, rebootMode)
+	// If auto_reboot is false, the operator wants install-only — skip the full
+	// drain/wait/uncordon orchestration and just run the install step.
+	if !autoReboot {
+		if useLifecycle {
+			return upgradeViaLifecycleService(nCtx, c, image, tag, false, rebootMode)
+		}
+		return upgradeViaLegacyAPI(nCtx, c, args, image, tag, false)
 	}
-	return upgradeViaLegacyAPI(nCtx, c, args, image, tag, autoReboot)
+
+	return drainUpgradeReboot(nCtx, c, args, image, tag, useLifecycle, rebootMode)
+}
+
+// drainUpgradeReboot is the full talosctl-equivalent upgrade flow for
+// auto_reboot=true: cordon + drain (via the kubectl drain library) -> install
+// -> reboot -> wait for the Talos node to come back -> wait for K8s Ready ->
+// uncordon. K8s steps are skipped gracefully if the target isn't a Kubernetes
+// node (e.g. fresh cluster, or non-K8s Talos use case).
+func drainUpgradeReboot(nCtx context.Context, c *client.Client, args map[string]any, image, tag string, useLifecycle bool, rebootMode string) (*mcp.CallToolResult, error) {
+	stages := []string{}
+	addStage := func(msg string) { stages = append(stages, msg) }
+
+	// Phase 0 — try to set up K8s drain/uncordon. Failures here are tolerated:
+	// the upgrade can proceed without K8s orchestration if the node isn't
+	// joined or the API isn't reachable.
+	nodeName, _ := getKubernetesNodeName(nCtx, c)
+	var clientset *kubernetes.Clientset
+	if nodeName != "" {
+		cs, csErr := newK8sClientset(nCtx, c)
+		if csErr != nil {
+			addStage(fmt.Sprintf("k8s skipped: %v", csErr))
+		} else {
+			clientset = cs
+		}
+	} else {
+		addStage("k8s skipped: node not registered as a Kubernetes member")
+	}
+
+	// Phase 1 — cordon + drain (if we have a clientset).
+	if clientset != nil {
+		if err := cordonAndDrain(nCtx, clientset, nodeName, defaultDrainTimeout, addStage); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("drain failed: %v\nstages: %s", err, strings.Join(stages, " | "))), nil
+		}
+	}
+
+	// Phase 2 — install (and reboot, since we got here only when auto_reboot=true).
+	var installRes *mcp.CallToolResult
+	var installErr error
+	if useLifecycle {
+		installRes, installErr = upgradeViaLifecycleService(nCtx, c, image, tag, true, rebootMode)
+	} else {
+		installRes, installErr = upgradeViaLegacyAPI(nCtx, c, args, image, tag, true)
+	}
+	if installErr != nil {
+		// installRes already encodes the error; uncordon best-effort and return it.
+		if clientset != nil {
+			_ = uncordonNode(nCtx, clientset, nodeName)
+		}
+		return installRes, nil
+	}
+	if installRes == nil {
+		return mcp.NewToolResultError("install returned no result"), nil
+	}
+	// Extract install JSON payload so we can enrich it with drain/wait outcomes.
+	installPayload := extractJSONResult(installRes)
+	if status, _ := installPayload["status"].(string); status != "ok" {
+		// install reported a failure (e.g. installed_no_reboot). Uncordon and bail
+		// without waiting for a reboot that didn't happen.
+		if clientset != nil {
+			if err := uncordonNode(nCtx, clientset, nodeName); err != nil {
+				installPayload["uncordon_error"] = err.Error()
+			} else {
+				installPayload["uncordoned"] = true
+			}
+		}
+		installPayload["stages"] = stages
+		return jsonResult(installPayload)
+	}
+
+	// Phase 3 — wait for the Talos node to reboot and come back.
+	addStage("waiting for talos to reboot")
+	if err := waitForTalosReboot(nCtx, c, 10*time.Minute); err != nil {
+		installPayload["wait_error"] = err.Error()
+		installPayload["status"] = "rebooted_no_wait"
+		if clientset != nil {
+			_ = uncordonNode(nCtx, clientset, nodeName)
+			installPayload["uncordoned"] = true
+		}
+		installPayload["stages"] = stages
+		return jsonResult(installPayload)
+	}
+	addStage("talos reachable again")
+	installPayload["talos_back"] = true
+
+	// Phase 4 — wait for the K8s node to be Ready (only if we have a clientset).
+	if clientset != nil {
+		if err := waitNodeReady(nCtx, clientset, nodeName, defaultNodeReadyTimeout); err != nil {
+			installPayload["k8s_ready_error"] = err.Error()
+		} else {
+			addStage(fmt.Sprintf("node %s is Ready", nodeName))
+			installPayload["k8s_ready"] = true
+		}
+		// Phase 5 — uncordon (always attempt; we cordoned in phase 1).
+		if err := uncordonNode(nCtx, clientset, nodeName); err != nil {
+			installPayload["uncordon_error"] = err.Error()
+		} else {
+			addStage(fmt.Sprintf("node %s uncordoned", nodeName))
+			installPayload["uncordoned"] = true
+		}
+		installPayload["k8s_node_name"] = nodeName
+	}
+
+	installPayload["stages"] = stages
+	return jsonResult(installPayload)
+}
+
+// extractJSONResult unmarshals the JSON-encoded text in an MCP tool result back
+// into a map. Used to enrich the install result with drain/wait/uncordon
+// outcomes before re-emitting it.
+func extractJSONResult(res *mcp.CallToolResult) map[string]any {
+	out := map[string]any{}
+	if res == nil {
+		return out
+	}
+	for _, item := range res.Content {
+		tc, ok := item.(mcp.TextContent)
+		if !ok {
+			continue
+		}
+		if err := json.Unmarshal([]byte(tc.Text), &out); err == nil {
+			return out
+		}
+	}
+	return out
 }
 
 // rebootModeOpts maps the user-facing reboot_mode string onto client.RebootMode options.

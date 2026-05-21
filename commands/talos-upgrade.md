@@ -24,18 +24,14 @@ Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from
    - **Extensions installed** — stock images **do not contain extensions**; upgrading to one will remove them on reboot. Build a custom installer first via `/talos-image` (output type `installer`), push it to a registry, and use that image reference here. Confirm with the user before proceeding if extensions are present and only a stock image was provided.
 
 3. **Upgrade control plane nodes** (one at a time):
-   a. *(Optional, for workload safety on busy nodes)* drain via the Kubernetes MCP:
-      - `mcp__kubernetes-mcp-server__nodes_cordon` to mark unschedulable
-      - Evict / delete the pods on the node (Kubernetes MCP eviction tooling, or `kubectl drain` via Bash if necessary)
-   b. Call `talos_upgrade(node, image)` — installs and reboots by default (`auto_reboot=true`). Internally this is `ImageService.Pull` + `LifecycleService.Upgrade` + `Reboot` on v1.13+, or the legacy single-shot `MachineService.Upgrade` on <v1.13. Response's `"api"` field reveals which path ran.
-   c. Wait for the node to come back and rejoin the cluster.
-   d. *(If you drained)* uncordon the node via the Kubernetes MCP.
-   e. Verify health (`talos_health`, `talos_etcd_members`) before proceeding to the next CP node.
-   - **Deferred activation:** pass `auto_reboot=false` to install without rebooting (useful for maintenance-window scheduling). Then trigger `talos_reboot(node)` later when ready.
+   a. Call `talos_upgrade(node, image)`. The tool does the full cycle: cordon → drain (via the kubectl drain library) → install → reboot → wait for Talos back + K8s Ready → uncordon. It returns when the node is fully back in service.
+   b. Inspect the response: `"api"` (`"lifecycle"` v1.13+ or `"legacy"` <v1.13), `"talos_back"`, `"k8s_ready"`, `"uncordoned"`, `"k8s_node_name"`, `"stages"` (ordered progress).
+   c. Verify health (`talos_health`, `talos_etcd_members`) before proceeding to the next CP node.
+   - **Deferred activation:** pass `auto_reboot=false` to install without rebooting (useful for maintenance-window scheduling). The drain/wait/uncordon steps are skipped too — it's just the install. Trigger `talos_reboot(node)` later when ready.
    - **Quorum caution:** for 3-node CP this tolerates one node down; for 2-node CP you have zero margin — the cluster will lose etcd quorum while a CP is upgrading. Warn the user explicitly on a 2-CP cluster.
 
 4. **Upgrade worker nodes:**
-   - Use `talos_upgrade` on each worker (same install-and-reboot single call as step 3).
+   - Use `talos_upgrade` on each worker (same single-call full-cycle as step 3).
    - Workers can be upgraded in parallel only if the user confirms and workloads tolerate simultaneous reboots.
 
 5. **Post-upgrade verification:**

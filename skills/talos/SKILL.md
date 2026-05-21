@@ -91,32 +91,40 @@ Modify running configs with `talos_patch(patch, node)` — applies a strategic m
 
 ### Upgrade Talos
 
-`talos_upgrade` is a single call by default — it installs and reboots, regardless of server version. Internally it auto-detects v1.13+ and runs `ImageService.Pull` + `LifecycleService.Upgrade` + `Reboot` (matching talosctl's client-side orchestration); on <v1.13 it uses the legacy single-shot `MachineService.Upgrade` (which already includes the reboot). The response's `"api"` field tells you which path ran.
+`talos_upgrade` is a single tool call that does the full talosctl-equivalent flow per node: **cordon → drain → install → reboot → wait → uncordon**. It returns when the node is fully back in service.
+
+Internally, with `auto_reboot=true` (default):
+- **Drain** uses the kubectl drain library (`k8s.io/kubectl/pkg/drain`) — same code path as `kubectl drain` and `talosctl upgrade --drain=true`. PDB-aware (retries blocked evictions), skips DaemonSet/mirror/static pods, evicts emptyDir-using pods (node is rebooting anyway), uses each pod's own `terminationGracePeriodSeconds`.
+- **Install** auto-detects: `ImageService.Pull` + `LifecycleService.Upgrade` on v1.13+ servers, or single-shot `MachineService.Upgrade` on older ones.
+- **Reboot** is the explicit `Reboot` RPC on v1.13+ (LifecycleService is install-only), or implied by the legacy upgrade RPC on <v1.13.
+- **Wait** polls `c.Version` with a saw-down-then-saw-up rule to detect the reboot, then polls the Kubernetes API for the node's Ready condition.
+- **Uncordon** runs at the end (or in defer on early failure) so the node never stays cordoned because of a partial failure.
+
+K8s steps are **skipped gracefully** if the target isn't a Kubernetes member (e.g. fresh node not yet joined) — the upgrade still runs.
 
 **Steps:**
 1. Pre-flight: `talos_version`, `talos_health`, list installed extensions (`talos_extensions`)
 2. Etcd snapshot: `talos_etcd_snapshot` (recommended before any CP upgrade)
 3. For each control plane node (one at a time):
-   a. *(Optional, for workload safety on busy nodes)* drain via the Kubernetes MCP — see "Kubernetes drain" below.
-   b. `talos_upgrade(node, image)` — installs + reboots by default. Wait for the node to come back and rejoin the cluster.
-   c. *(If you drained)* uncordon the node via the Kubernetes MCP after it rejoins.
-   d. Verify (`talos_health`, `talos_etcd_members`) before moving to the next CP node.
-4. Repeat for workers.
+   a. `talos_upgrade(node, image)` — does the full cycle, returns when the node is back and uncordoned.
+   b. Verify (`talos_health`, `talos_etcd_members`) before moving on.
+4. Repeat for workers (may run in parallel only if workloads tolerate simultaneous reboots).
 5. Post-upgrade verification: `talos_health`, `talos_version`, `talos_extensions` (catches the "upgraded to stock image, lost extensions" mistake).
+
+**Response shape** (on `auto_reboot=true` success path):
+- `api`: `"lifecycle"` (v1.13+) or `"legacy"` (<v1.13)
+- `server_tag`: detected pre-upgrade Talos tag
+- `pulled_image`: canonical digest-pinned image (v1.13+ only)
+- `rebooted: true`, `talos_back: true`, `k8s_ready: true`, `uncordoned: true`
+- `k8s_node_name`: resolved Kubernetes node name (only when the target is a K8s member)
+- `stages`: ordered list of progress messages (`"cordoning node X"`, `"evicting pod Y/Z"`, `"talos reachable again"`, etc.)
+- `status`: `"ok"`
+
+If something fails mid-flow, the response still includes everything observed (`rebooted`, `talos_back`, etc. as far as they got) plus an error field (`wait_error`, `k8s_ready_error`, `uncordon_error`) and a status like `"rebooted_no_wait"` or `"installed_no_reboot"`. The uncordon is always attempted on a best-effort basis.
 
 **`auto_reboot=false` — install without activating:**
 
-If you want to stage the install but defer activation (e.g. install during business hours, reboot during a maintenance window), call `talos_upgrade(node, image, auto_reboot=false)`. On v1.13+ this skips the post-install Reboot RPC; on <v1.13 it sets the legacy `stage` flag. The new version is written to the alternate A/B partition with META updated; the node keeps running the current version until you trigger `talos_reboot` manually.
-
-**Kubernetes drain:**
-
-Neither `talos_upgrade` nor `talos_reboot` cordons or evicts Kubernetes pods on its own — they trigger Talos's own graceful service teardown (machined → apid → kubelet → containerd), but the Kubernetes API isn't told the node is going away. For workload safety on a busy node, drain via the Kubernetes MCP **before** the upgrade:
-- `mcp__kubernetes-mcp-server__nodes_cordon` (mark unschedulable)
-- evict / delete the pods on the node (Kubernetes MCP eviction tooling, or `kubectl drain` via Bash)
-- then `talos_upgrade(node, image)` — which installs + reboots
-- after the node comes back, uncordon via the Kubernetes MCP
-
-This is the equivalent of `talosctl upgrade --drain=true` (talosctl's default), but split across the two MCPs per this plugin's "MCP-first" design.
+Pass `auto_reboot=false` when you want to stage the install but defer activation (install during business hours, reboot during a maintenance window). This skips drain, reboot, wait, and uncordon — just the install runs. The new version is written to the alternate A/B partition with META updated; the node keeps running the current version until you trigger `talos_reboot` (or another `talos_upgrade` call with `auto_reboot=true`) manually.
 
 **Important upgrade rules:**
 - **Version path**: Must upgrade through all intermediate minor releases (e.g., 1.11 → 1.12 → 1.13, not 1.11 → 1.13 directly)
