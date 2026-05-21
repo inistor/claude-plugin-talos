@@ -526,7 +526,14 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 // aggregates them into a single response. The legacy force/stage/reboot_mode
 // options are not part of the new API and are ignored if present in args.
 func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, tag string) (*mcp.CallToolResult, error) {
+	// Talos LifecycleService requires Containerd to be set (zero-value enum
+	// is NS_UNKNOWN which the server rejects). Installer/upgrade images are
+	// pulled into the system containerd namespace; Driver defaults to
+	// CONTAINERD which is correct for the system instance.
 	stream, err := c.LifecycleClient.Upgrade(nCtx, &machine.LifecycleServiceUpgradeRequest{
+		Containerd: &common.ContainerdInstance{
+			Namespace: common.ContainerdNamespace_NS_SYSTEM,
+		},
 		Source: &machine.InstallArtifactsSource{ImageName: image},
 	})
 	if err != nil {
