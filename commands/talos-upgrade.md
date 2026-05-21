@@ -14,29 +14,29 @@ Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from
 ## Talos Upgrade
 
 1. **Pre-flight checks:**
-   - Get current version on all nodes: `mcp__talos__talos_version`
-   - Check cluster health: `mcp__talos__talos_health`
-   - List installed extensions on each node: `mcp__talos__talos_extensions`
-   - Create etcd snapshot: `mcp__talos__talos_etcd_snapshot`
+   - Get current version on all nodes: `talos_version`
+   - Check cluster health: `talos_health`
+   - List installed extensions on each node: `talos_extensions`
+   - Create etcd snapshot: `talos_etcd_snapshot`
 
 2. **Decide on the image:**
    - **No extensions** — use the stock image, e.g. `ghcr.io/siderolabs/installer:v1.13.2`.
    - **Extensions installed** — stock images **do not contain extensions**; upgrading to one will remove them on reboot. Build a custom installer first via `/talos-image` (output type `installer`), push it to a registry, and use that image reference here. Confirm with the user before proceeding if extensions are present and only a stock image was provided.
 
 3. **Upgrade control plane nodes** (one at a time):
-   - Use `mcp__talos__talos_upgrade` with the target image
+   - Use `talos_upgrade` with the target image
    - Wait for the node to come back and rejoin the cluster
    - Verify health (`talos_health`, `talos_etcd_members`) before proceeding to the next node
    - **Quorum caution:** for 3-node CP this tolerates one node down; for 2-node CP you have zero margin — the cluster will lose etcd quorum while a CP is upgrading. Warn the user explicitly on a 2-CP cluster.
 
 4. **Upgrade worker nodes:**
-   - Use `mcp__talos__talos_upgrade` on each worker
+   - Use `talos_upgrade` on each worker
    - Workers can be upgraded in parallel only if the user confirms and workloads tolerate simultaneous reboots
 
 5. **Post-upgrade verification:**
-   - Check cluster health: `mcp__talos__talos_health`
-   - Verify all nodes report new version: `mcp__talos__talos_version`
-   - Verify extensions are still present: `mcp__talos__talos_extensions` (catches the "upgraded to stock image" mistake)
+   - Check cluster health: `talos_health`
+   - Verify all nodes report new version: `talos_version`
+   - Verify extensions are still present: `talos_extensions` (catches the "upgraded to stock image" mistake)
    - Check Kubernetes workloads via `mcp__kubernetes-mcp-server__pods_list`
 
 ## Kubernetes Upgrade
@@ -44,10 +44,10 @@ Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from
 Kubernetes upgrades use `talosctl upgrade-k8s` — a complex client-side orchestration that patches configs, pre-pulls images, and monitors rollout across all nodes. As of Talos v1.13 this stays client-side (the new `LifecycleService` API covers Talos OS upgrades only).
 
 0. **Precondition:** verify `talosctl` is installed and on PATH. Run `command -v talosctl >/dev/null || { echo "talosctl required for k8s upgrade (no MCP equivalent); install it first"; exit 1; }`. If missing, tell the user to install it (`brew install siderolabs/tap/talosctl` or download from https://github.com/siderolabs/talos/releases) before proceeding — there is no MCP equivalent for this path.
-1. **Pre-flight:** Create etcd snapshot via `mcp__talos__talos_etcd_snapshot`
+1. **Pre-flight:** Create etcd snapshot via `talos_etcd_snapshot`
 2. **Dry-run:** `talosctl upgrade-k8s --to <version> --dry-run` via Bash and review the plan with the user
 3. **Run:** `talosctl upgrade-k8s --to <version>` via Bash
-4. **Verify:** Check node versions via `mcp__kubernetes-mcp-server__nodes_list`, check cluster health via `mcp__talos__talos_health`
+4. **Verify:** Check node versions via `mcp__kubernetes-mcp-server__nodes_list`, check cluster health via `talos_health`
 
 **Important:**
 - Always create an etcd snapshot before starting

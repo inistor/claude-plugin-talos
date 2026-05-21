@@ -99,7 +99,7 @@ docker load -i _out/installer-amd64.tar
 docker tag  ghcr.io/siderolabs/installer:v1.13.2 <registry>/<repo>:v1.13.2-custom
 docker push <registry>/<repo>:v1.13.2-custom
 ```
-Then reference `<registry>/<repo>:v1.13.2-custom` in `mcp__talos__talos_upgrade` or in `.machine.install.image` at install time.
+Then reference `<registry>/<repo>:v1.13.2-custom` in `talos_upgrade` or in `.machine.install.image` at install time.
 
 **SecureBoot ISO:**
 ```bash

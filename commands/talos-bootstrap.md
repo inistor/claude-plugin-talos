@@ -17,17 +17,17 @@ Bootstrap a new Talos Linux cluster. Follow these steps:
 
    Config generation is **client-side only** — it creates the cluster PKI, encryption keys, and bootstrap secrets, so there is no server-side MCP equivalent (analogous to how `talosctl upgrade-k8s` stays on the client in `/talos-upgrade`). Apply patches with `--config-patch @patch.yaml`, `--config-patch-control-plane`, or `--config-patch-worker`. After generation, the user can also edit the YAML files directly.
 
-3. **Load talosconfig into the MCP session** — Run `base64 < talosconfig` via Bash and pass the output to `mcp__talos__talos_set_config`. All subsequent MCP calls will use this config.
+3. **Load talosconfig into the MCP session** — Run `base64 < talosconfig` via Bash and pass the output to `talos_set_config`. All subsequent MCP calls will use this config.
 
 4. **Apply configs** — For each node (which is in maintenance mode):
-   - Read the appropriate file (`controlplane.yaml` or `worker.yaml`) and call `mcp__talos__talos_apply_config` with the YAML content, the node IP, and `insecure: true` (maintenance mode has no TLS auth yet).
+   - Read the appropriate file (`controlplane.yaml` or `worker.yaml`) and call `talos_apply_config` with the YAML content, the node IP, and `insecure: true` (maintenance mode has no TLS auth yet).
    - Wait for the node to reboot into its provisioned state before moving on.
 
-5. **Bootstrap etcd** — Call `mcp__talos__talos_bootstrap` on **ONE** control plane node only.
+5. **Bootstrap etcd** — Call `talos_bootstrap` on **ONE** control plane node only.
 
-6. **Verify** — Call `mcp__talos__talos_health` to check cluster health. Once healthy, use `mcp__kubernetes-mcp-server__nodes_top` to confirm Kubernetes is up.
+6. **Verify** — Call `talos_health` to check cluster health. Once healthy, use `mcp__kubernetes-mcp-server__nodes_top` to confirm Kubernetes is up.
 
-7. **Retrieve kubeconfig** — Call `mcp__talos__talos_kubeconfig` to fetch the admin kubeconfig and save/merge it where the user prefers (commonly `~/.kube/config`).
+7. **Retrieve kubeconfig** — Call `talos_kubeconfig` to fetch the admin kubeconfig and save/merge it where the user prefers (commonly `~/.kube/config`).
 
 **Important:**
 - Never bootstrap more than one node

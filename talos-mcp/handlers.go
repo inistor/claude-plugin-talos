@@ -68,6 +68,23 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// parseApplyMode maps the user-facing mode string onto the protobuf enum.
+// An empty or unknown value yields AUTO, matching talosctl behaviour.
+func parseApplyMode(mode string) machine.ApplyConfigurationRequest_Mode {
+	switch strings.ToLower(mode) {
+	case "no-reboot":
+		return machine.ApplyConfigurationRequest_NO_REBOOT
+	case "reboot":
+		return machine.ApplyConfigurationRequest_REBOOT
+	case "staged":
+		return machine.ApplyConfigurationRequest_STAGED
+	case "try":
+		return machine.ApplyConfigurationRequest_TRY
+	default:
+		return machine.ApplyConfigurationRequest_AUTO
+	}
+}
+
 // byteStream is implemented by Logs and Dmesg stream responses.
 type byteStream interface {
 	Recv() (*common.Data, error)
@@ -88,11 +105,11 @@ func collectStream(stream byteStream, filter string) (string, error) {
 		chunk := string(data.GetBytes())
 		if filter == "" {
 			lines = append(lines, chunk)
-		} else {
-			for _, line := range strings.Split(chunk, "\n") {
-				if strings.Contains(line, filter) {
-					lines = append(lines, line+"\n")
-				}
+			continue
+		}
+		for line := range strings.SplitSeq(chunk, "\n") {
+			if strings.Contains(line, filter) {
+				lines = append(lines, line+"\n")
 			}
 		}
 	}
@@ -353,21 +370,9 @@ func handleApplyConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	mode, _ := args["mode"].(string)
 	dryRun, _ := args["dry_run"].(bool)
 
-	applyMode := machine.ApplyConfigurationRequest_AUTO
-	switch strings.ToLower(mode) {
-	case "no-reboot":
-		applyMode = machine.ApplyConfigurationRequest_NO_REBOOT
-	case "reboot":
-		applyMode = machine.ApplyConfigurationRequest_REBOOT
-	case "staged":
-		applyMode = machine.ApplyConfigurationRequest_STAGED
-	case "try":
-		applyMode = machine.ApplyConfigurationRequest_TRY
-	}
-
 	resp, err := c.ApplyConfiguration(nCtx, &machine.ApplyConfigurationRequest{
 		Data:   []byte(config),
-		Mode:   applyMode,
+		Mode:   parseApplyMode(mode),
 		DryRun: dryRun,
 	})
 	if err != nil {
@@ -456,7 +461,7 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 
 	// system_labels_to_wipe: selective partition wipe by label
 	if labels, ok := args["system_labels_to_wipe"].(string); ok && labels != "" {
-		for _, label := range strings.Split(labels, ",") {
+		for label := range strings.SplitSeq(labels, ",") {
 			resetReq.SystemPartitionsToWipe = append(resetReq.SystemPartitionsToWipe,
 				&machine.ResetPartitionSpec{Label: strings.TrimSpace(label)})
 		}
@@ -1019,21 +1024,9 @@ func handlePatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	}
 
 	// 3. Apply the patched config
-	applyMode := machine.ApplyConfigurationRequest_AUTO
-	switch strings.ToLower(mode) {
-	case "no-reboot":
-		applyMode = machine.ApplyConfigurationRequest_NO_REBOOT
-	case "reboot":
-		applyMode = machine.ApplyConfigurationRequest_REBOOT
-	case "staged":
-		applyMode = machine.ApplyConfigurationRequest_STAGED
-	case "try":
-		applyMode = machine.ApplyConfigurationRequest_TRY
-	}
-
 	resp, err := c.ApplyConfiguration(nCtx, &machine.ApplyConfigurationRequest{
 		Data:   patchedBytes,
-		Mode:   applyMode,
+		Mode:   parseApplyMode(mode),
 		DryRun: dryRun,
 	})
 	if err != nil {
@@ -1175,10 +1168,10 @@ func handleImageList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 			return mcp.NewToolResultError(fmt.Sprintf("image list stream failed: %v", err)), nil
 		}
 		images = append(images, map[string]any{
-			"name":      img.GetName(),
-			"digest":    img.GetDigest(),
-			"size":      img.GetSize(),
-			"created":   img.GetCreatedAt().AsTime().Format(time.RFC3339),
+			"name":    img.GetName(),
+			"digest":  img.GetDigest(),
+			"size":    img.GetSize(),
+			"created": img.GetCreatedAt().AsTime().Format(time.RFC3339),
 		})
 	}
 	return jsonResult(images)

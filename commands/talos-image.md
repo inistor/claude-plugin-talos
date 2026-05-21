@@ -14,7 +14,7 @@ Build a custom Talos Linux image using the local imager container. Follow these 
    - Platform/arch if relevant (e.g., `aws`, `azure`, `metal-rpi_generic`)
    - SecureBoot: yes/no
    - Any overlay to apply
-   - For `installer`: the destination registry/repo (so the resulting image can be pushed and referenced later by `mcp__talos__talos_upgrade`)
+   - For `installer`: the destination registry/repo (so the resulting image can be pushed and referenced later by `talos_upgrade`)
 
 2. **Build the imager command** — Output goes to `/out` inside the container, so always bind-mount a host directory there. `--privileged` and `-v /dev:/dev` are only needed for **bootable-media** profiles (`iso`, `metal`, `disk-image`, cloud targets) which use loop devices; the `installer` profile does not need them.
 
@@ -52,7 +52,7 @@ Build a custom Talos Linux image using the local imager container. Follow these 
    docker tag  ghcr.io/siderolabs/installer:vX.Y.Z <registry>/<repo>:vX.Y.Z-custom
    docker push <registry>/<repo>:vX.Y.Z-custom
    ```
-   Then the upgrade flow can reference `<registry>/<repo>:vX.Y.Z-custom` via `mcp__talos__talos_upgrade` (or in `.machine.install.image` at install time).
+   Then the upgrade flow can reference `<registry>/<repo>:vX.Y.Z-custom` via `talos_upgrade` (or in `.machine.install.image` at install time).
 
 6. **Report** the output file location and any relevant details (size, SHA, pushed image ref).
 

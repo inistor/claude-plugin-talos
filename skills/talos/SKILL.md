@@ -1,5 +1,5 @@
 ---
-name: Talos Linux
+name: talos-linux
 description: |
   This skill should be used when working with Talos Linux clusters, talosctl, or the Talos API.
   Covers machine configuration (v1alpha1), cluster bootstrap, Talos upgrades, Kubernetes version
@@ -16,7 +16,7 @@ This skill covers Talos Linux v1.13. All documentation references point to https
 
 ## Tool Usage Rules
 
-Use Talos MCP tools (`mcp__talos__*`) for all Talos operations. Never shell out to `talosctl` unless the MCP tool is unavailable.
+Use Talos MCP tools — `mcp__talos__*` when the MCP is configured via user config, or `mcp__plugin_talos_talos__*` when installed via the plugin marketplace — for all Talos operations. Never shell out to `talosctl` unless the MCP tool is unavailable.
 
 Use Kubernetes MCP tools (`mcp__kubernetes-mcp-server__*`) for all Kubernetes operations. Avoid `kubectl` unless the MCP tool is impractical (e.g., events — see below).
 
