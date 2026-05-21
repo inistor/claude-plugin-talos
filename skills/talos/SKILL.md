@@ -90,14 +90,16 @@ Modify running configs with `talos_patch(patch, node)` — applies a strategic m
 **Note**: `talos_version`, `talos_disks`, `talos_get`, and `talos_apply_config` support `insecure: true` for nodes in maintenance mode. Stop using `insecure` once the machine config is applied.
 
 ### Upgrade Talos
-1. Check current versions (`talos_version`) → 2. Verify health (`talos_health`) → 3. Snapshot etcd (recommended: `talos_etcd_snapshot`) → 4. Upgrade CP nodes (`talos_upgrade`) → 5. Upgrade workers → 6. Verify health
+1. Check current versions (`talos_version`) → 2. Verify health (`talos_health`) → 3. Snapshot etcd (recommended: `talos_etcd_snapshot`) → 4. Upgrade CP nodes (`talos_upgrade`) → 5. **For v1.13+ targets, reboot each node explicitly with `talos_reboot`** → 6. Upgrade workers (same pattern) → 7. Verify health
 
 **Important upgrade rules:**
 - **Version path**: Must upgrade through all intermediate minor releases (e.g., 1.11 → 1.12 → 1.13, not 1.11 → 1.13 directly)
+- **v1.13+ upgrades are install-only** — the new `LifecycleService.Upgrade` RPC writes the new Talos to the A/B alternate partition, updates META to point next-boot at it, and **returns without rebooting**. The operator (or this skill) must trigger `talos_reboot` afterward to activate the new version. This is a behaviour change from the legacy `MachineService.Upgrade` (pre-v1.13) which auto-rebooted. Our `talos_upgrade` MCP tool routes via the version-aware dispatcher: against <v1.13 servers it uses the legacy auto-reboot path; against v1.13+ servers it uses LifecycleService and you must add the explicit reboot step.
+- **Image is pre-pulled on v1.13+** — `talos_upgrade` first invokes `ImageService.Pull` into the system containerd, then `LifecycleService.Upgrade` with the resolved (digest-pinned) image. Response includes `pulled_image` with the canonical reference.
 - **Custom installer for extensions**: Stock installer images contain no extensions — upgrading a cluster that uses extensions to a stock image will strip them on reboot. Build a matching custom installer via `/talos-image` first and pass that image to `talos_upgrade`
 - **CP serialization**: Talos automatically serializes CP upgrades and refuses if etcd quorum would be lost — no need to manually enforce one-at-a-time
 - **Automatic rollback**: If the upgraded system fails to boot, the A/B bootloader automatically reverts. Manual `talos_rollback` is for reverting a successful but unwanted upgrade
-- **Staged upgrades**: Use `stage: true` if in-place upgrade can't unmount filesystems
+- **Staged upgrades**: Use `stage: true` if in-place upgrade can't unmount filesystems (legacy <v1.13 path only — the v1.13 LifecycleService is already staged-by-design)
 
 ### Upgrade Kubernetes
 Use `talosctl upgrade-k8s --to <version>` via Bash. This is a complex client-side orchestration that patches all nodes' configs, pre-pulls images, and monitors rollout. As of v1.13 this remains client-side — the new `LifecycleService` API covers Talos OS install/upgrade only, not the Kubernetes control-plane upgrade flow (which interleaves Talos API and Kubernetes API calls). Do NOT attempt to replicate this manually with `talos_patch` — use the talosctl command directly. Use `--dry-run` first to preview the plan. The command is resumable if interrupted.

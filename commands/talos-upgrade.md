@@ -25,12 +25,14 @@ Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from
 
 3. **Upgrade control plane nodes** (one at a time):
    - Use `talos_upgrade` with the target image
-   - Wait for the node to come back and rejoin the cluster
+   - Inspect the response: `"api"` is either `"legacy"` (server <v1.13) or `"lifecycle"` (server v1.13+).
+     - **`"api": "legacy"`** — the node auto-reboots as part of the upgrade. Wait for it to come back and rejoin the cluster.
+     - **`"api": "lifecycle"`** — the v1.13 `LifecycleService.Upgrade` is **install-only**: it writes Talos to the alternate A/B partition and updates META, but does **not** reboot. Run `talos_reboot` on the same node next, then wait for it to come back.
    - Verify health (`talos_health`, `talos_etcd_members`) before proceeding to the next node
    - **Quorum caution:** for 3-node CP this tolerates one node down; for 2-node CP you have zero margin — the cluster will lose etcd quorum while a CP is upgrading. Warn the user explicitly on a 2-CP cluster.
 
 4. **Upgrade worker nodes:**
-   - Use `talos_upgrade` on each worker
+   - Use `talos_upgrade` on each worker (same install-then-reboot pattern as step 3 for v1.13+)
    - Workers can be upgraded in parallel only if the user confirms and workloads tolerate simultaneous reboots
 
 5. **Post-upgrade verification:**

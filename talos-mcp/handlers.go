@@ -522,22 +522,47 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	return upgradeViaLegacyAPI(nCtx, c, args, image, tag)
 }
 
-// upgradeViaLifecycleService is the v1.13+ path. Streams progress updates and
-// aggregates them into a single response. The legacy force/stage/reboot_mode
-// options are not part of the new API and are ignored if present in args.
+// upgradeViaLifecycleService is the v1.13+ path. Pulls the image first
+// (LifecycleService.Upgrade no longer pulls internally — that was split out
+// into ImageService.Pull in v1.13), then streams the upgrade progress and
+// aggregates everything into a single response. The legacy force/stage/
+// reboot_mode options are not part of the new API and are ignored.
 func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, tag string) (*mcp.CallToolResult, error) {
-	// Talos LifecycleService requires Containerd to be set (zero-value enum
-	// is NS_UNKNOWN which the server rejects). Installer/upgrade images are
-	// pulled into the system containerd namespace; Driver defaults to
+	// Talos requires Containerd to be set on both Pull and Upgrade requests
+	// (zero-value enum is NS_UNKNOWN which the server rejects). Installer
+	// images live in the system containerd namespace; Driver defaults to
 	// CONTAINERD which is correct for the system instance.
-	stream, err := c.LifecycleClient.Upgrade(nCtx, &machine.LifecycleServiceUpgradeRequest{
-		Containerd: &common.ContainerdInstance{
-			Namespace: common.ContainerdNamespace_NS_SYSTEM,
-		},
-		Source: &machine.InstallArtifactsSource{ImageName: image},
+	sysNs := &common.ContainerdInstance{Namespace: common.ContainerdNamespace_NS_SYSTEM}
+
+	// Phase 1: pull the image into the node's system containerd.
+	pullStream, err := c.ImageClient.Pull(nCtx, &machine.ImageServicePullRequest{
+		Containerd: sysNs,
+		ImageRef:   image,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (LifecycleService, server %s): %v", tag, err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("image pull failed (LifecycleService prep, server %s): %v", tag, err)), nil
+	}
+	pulledName := image
+	for {
+		resp, err := pullStream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("image pull stream failed (server %s): %v", tag, err)), nil
+		}
+		if name := resp.GetName(); name != "" {
+			pulledName = name
+		}
+	}
+
+	// Phase 2: run the upgrade with the pre-pulled image reference.
+	stream, err := c.LifecycleClient.Upgrade(nCtx, &machine.LifecycleServiceUpgradeRequest{
+		Containerd: sysNs,
+		Source:     &machine.InstallArtifactsSource{ImageName: pulledName},
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (LifecycleService, server %s, image %q was pulled OK): %v", tag, pulledName, err)), nil
 	}
 
 	var (
@@ -562,9 +587,10 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 	}
 
 	out := map[string]any{
-		"api":        "lifecycle",
-		"server_tag": tag,
-		"messages":   messages,
+		"api":          "lifecycle",
+		"server_tag":   tag,
+		"pulled_image": pulledName,
+		"messages":     messages,
 	}
 	if exitCode != 0 {
 		out["status"] = "failed"
