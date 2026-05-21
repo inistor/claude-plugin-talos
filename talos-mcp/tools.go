@@ -90,11 +90,12 @@ func registerTools(s *server.MCPServer) {
 	), handleReset)
 
 	s.AddTool(mcp.NewTool("talos_upgrade",
-		mcp.WithDescription("Upgrade Talos on a node. Auto-detects the server version and routes accordingly: LifecycleService.Upgrade on v1.13+ (streaming progress, returns aggregated messages), or the legacy MachineService.Upgrade on <v1.13 servers (force/stage/reboot_mode honored). The response includes the API path taken (\"api\": \"lifecycle\" or \"legacy\") and the detected server tag."),
+		mcp.WithDescription("Upgrade Talos on a node. Auto-detects the server version and routes accordingly: LifecycleService on v1.13+ (pull + install + optional reboot, streamed), or the legacy MachineService.Upgrade on <v1.13 servers. By default the node is rebooted into the new version after install (matching talosctl). Set auto_reboot=false to install-only — useful when you want to drain the node first via the Kubernetes MCP, or defer activation to a maintenance window. Note: drain itself is NOT handled by this tool; do cordon/evict via the Kubernetes MCP before calling, or before calling talos_reboot if you opted out of auto_reboot. Response includes \"api\" (\"lifecycle\"|\"legacy\"), \"server_tag\", \"rebooted\", and on v1.13+ the resolved \"pulled_image\"."),
 		mcp.WithString("image", mcp.Required(), mcp.Description("Talos image reference (e.g. ghcr.io/siderolabs/installer:v1.13.2). If the cluster uses extensions, point to a custom installer built with /talos-image — stock images strip extensions on reboot.")),
+		mcp.WithBoolean("auto_reboot", mcp.Description("Reboot the node into the new version after a successful install (default: true). On v1.13+ this issues an explicit Reboot RPC after LifecycleService.Upgrade completes; on <v1.13 it leaves the legacy upgrade RPC's auto-reboot in place. Set false to install-only: the new version is staged in the alternate A/B partition and META is updated, but the node keeps running the current version until you trigger talos_reboot yourself.")),
+		mcp.WithString("reboot_mode", mcp.Description("Reboot mode: \"default\" (graceful, may use kexec) or \"powercycle\" (skip kexec, full hardware reboot). Applies to both the v1.13+ explicit Reboot RPC and the legacy upgrade's built-in reboot. Ignored if auto_reboot=false.")),
 		mcp.WithBoolean("force", mcp.Description("(<v1.13 only) Force upgrade, skip etcd health checks (may cause data loss). Ignored on v1.13+ servers — LifecycleService does not expose this option.")),
-		mcp.WithBoolean("stage", mcp.Description("(<v1.13 only) Stage the upgrade to perform after next reboot. Ignored on v1.13+ servers.")),
-		mcp.WithString("reboot_mode", mcp.Description("(<v1.13 only) Reboot mode during upgrade: default, powercycle. Ignored on v1.13+ servers.")),
+		mcp.WithBoolean("stage", mcp.Description("(<v1.13 only) Stage the upgrade to perform after next reboot. Equivalent to auto_reboot=false but legacy-specific. Prefer auto_reboot for cross-version code. Ignored on v1.13+ servers.")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleUpgrade)

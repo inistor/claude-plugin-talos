@@ -91,32 +91,32 @@ Modify running configs with `talos_patch(patch, node)` — applies a strategic m
 
 ### Upgrade Talos
 
-The upgrade flow depends on the target server version. `talos_upgrade` auto-detects and routes to the right path; the *operator-visible* difference is whether an explicit reboot is required afterward.
-
-| Server version | Single tool call enough? | Why |
-|---|---|---|
-| < v1.13 | ✓ | Legacy `MachineService.Upgrade` does install + reboot in one RPC (server-side orchestration). |
-| ≥ v1.13 | ✗ — needs **two MCP calls** | v1.13's `LifecycleService.Upgrade` is **install-only** (writes Talos to the alternate A/B partition, updates META). Follow with `talos_reboot` to activate. talosctl orchestrates the same two-step pattern client-side; we keep it explicit so the operator can also place a drain step in between. |
+`talos_upgrade` is a single call by default — it installs and reboots, regardless of server version. Internally it auto-detects v1.13+ and runs `ImageService.Pull` + `LifecycleService.Upgrade` + `Reboot` (matching talosctl's client-side orchestration); on <v1.13 it uses the legacy single-shot `MachineService.Upgrade` (which already includes the reboot). The response's `"api"` field tells you which path ran.
 
 **Steps:**
 1. Pre-flight: `talos_version`, `talos_health`, list installed extensions (`talos_extensions`)
 2. Etcd snapshot: `talos_etcd_snapshot` (recommended before any CP upgrade)
 3. For each control plane node (one at a time):
-   a. `talos_upgrade(node, image)` — inspect the response's `"api"` field. `"legacy"` → node auto-reboots; wait for it to rejoin. `"lifecycle"` → install completed, continue to (b).
-   b. **(v1.13+ only)** Optionally drain the Kubernetes node first (see "Kubernetes drain" below) for workload safety, then call `talos_reboot(node)`.
-   c. Verify (`talos_health`, `talos_etcd_members`) before moving to the next CP node.
+   a. *(Optional, for workload safety on busy nodes)* drain via the Kubernetes MCP — see "Kubernetes drain" below.
+   b. `talos_upgrade(node, image)` — installs + reboots by default. Wait for the node to come back and rejoin the cluster.
+   c. *(If you drained)* uncordon the node via the Kubernetes MCP after it rejoins.
+   d. Verify (`talos_health`, `talos_etcd_members`) before moving to the next CP node.
 4. Repeat for workers.
 5. Post-upgrade verification: `talos_health`, `talos_version`, `talos_extensions` (catches the "upgraded to stock image, lost extensions" mistake).
 
+**`auto_reboot=false` — install without activating:**
+
+If you want to stage the install but defer activation (e.g. install during business hours, reboot during a maintenance window), call `talos_upgrade(node, image, auto_reboot=false)`. On v1.13+ this skips the post-install Reboot RPC; on <v1.13 it sets the legacy `stage` flag. The new version is written to the alternate A/B partition with META updated; the node keeps running the current version until you trigger `talos_reboot` manually.
+
 **Kubernetes drain:**
 
-`talos_reboot` does not cordon or evict Kubernetes pods — it triggers Talos's own graceful teardown (machined → apid → kubelet → containerd stop), but the Kubernetes API isn't told the node is going away. For workload safety on a busy node, drain via the Kubernetes MCP **before** calling `talos_reboot`:
+Neither `talos_upgrade` nor `talos_reboot` cordons or evicts Kubernetes pods on its own — they trigger Talos's own graceful service teardown (machined → apid → kubelet → containerd), but the Kubernetes API isn't told the node is going away. For workload safety on a busy node, drain via the Kubernetes MCP **before** the upgrade:
 - `mcp__kubernetes-mcp-server__nodes_cordon` (mark unschedulable)
-- evict / delete the pods on the node (use the Kubernetes MCP's eviction tooling, or `kubectl drain` via Bash if you must)
-- then `talos_reboot(node)`
-- after the node comes back, uncordon
+- evict / delete the pods on the node (Kubernetes MCP eviction tooling, or `kubectl drain` via Bash)
+- then `talos_upgrade(node, image)` — which installs + reboots
+- after the node comes back, uncordon via the Kubernetes MCP
 
-This is the equivalent of `talosctl upgrade --drain=true` (talosctl's default), but split across the two MCPs (Talos + Kubernetes) per this plugin's "MCP-first" design.
+This is the equivalent of `talosctl upgrade --drain=true` (talosctl's default), but split across the two MCPs per this plugin's "MCP-first" design.
 
 **Important upgrade rules:**
 - **Version path**: Must upgrade through all intermediate minor releases (e.g., 1.11 → 1.12 → 1.13, not 1.11 → 1.13 directly)
@@ -124,7 +124,7 @@ This is the equivalent of `talosctl upgrade --drain=true` (talosctl's default), 
 - **Custom installer for extensions**: Stock installer images contain no extensions — upgrading a cluster that uses extensions to a stock image will strip them on reboot. Build a matching custom installer via `/talos-image` first and pass that image to `talos_upgrade`.
 - **CP serialization**: Talos automatically serializes CP upgrades and refuses if etcd quorum would be lost — no need to manually enforce one-at-a-time.
 - **Automatic rollback**: If the upgraded system fails to boot, the A/B bootloader automatically reverts. Manual `talos_rollback` is for reverting a successful but unwanted upgrade.
-- **Staged upgrades**: `stage: true` (legacy <v1.13 path only) defers the install to next reboot. The v1.13 LifecycleService is already staged-by-design (install + later reboot are intrinsically separate).
+- **Staged upgrades**: `stage: true` (legacy <v1.13 primitive) defers the install to next reboot. Prefer the cross-version `auto_reboot: false` for the same effect on either path.
 
 ### Upgrade Kubernetes
 Use `talosctl upgrade-k8s --to <version>` via Bash. This is a complex client-side orchestration that patches all nodes' configs, pre-pulls images, and monitors rollout. As of v1.13 this remains client-side — the new `LifecycleService` API covers Talos OS install/upgrade only, not the Kubernetes control-plane upgrade flow (which interleaves Talos API and Kubernetes API calls). Do NOT attempt to replicate this manually with `talos_patch` — use the talosctl command directly. Use `--dry-run` first to preview the plan. The command is resumable if interrupted.

@@ -511,23 +511,44 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		return mcp.NewToolResultError("image is required"), nil
 	}
 
+	autoReboot := true
+	if v, ok := args["auto_reboot"].(bool); ok {
+		autoReboot = v
+	}
+	rebootMode, _ := args["reboot_mode"].(string)
+
 	useLifecycle, tag, err := serverSupportsLifecycleService(c, nCtx)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("version probe failed: %v", err)), nil
 	}
 
 	if useLifecycle {
-		return upgradeViaLifecycleService(nCtx, c, image, tag)
+		return upgradeViaLifecycleService(nCtx, c, image, tag, autoReboot, rebootMode)
 	}
-	return upgradeViaLegacyAPI(nCtx, c, args, image, tag)
+	return upgradeViaLegacyAPI(nCtx, c, args, image, tag, autoReboot)
+}
+
+// rebootModeOpts maps the user-facing reboot_mode string onto client.RebootMode options.
+// Empty/unknown values yield a default reboot (no special mode).
+func rebootModeOpts(mode string) []client.RebootMode {
+	switch strings.ToLower(mode) {
+	case "powercycle":
+		return []client.RebootMode{client.WithPowerCycle}
+	case "force":
+		return []client.RebootMode{client.WithForce}
+	default:
+		return nil
+	}
 }
 
 // upgradeViaLifecycleService is the v1.13+ path. Pulls the image first
 // (LifecycleService.Upgrade no longer pulls internally — that was split out
 // into ImageService.Pull in v1.13), then streams the upgrade progress and
-// aggregates everything into a single response. The legacy force/stage/
-// reboot_mode options are not part of the new API and are ignored.
-func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, tag string) (*mcp.CallToolResult, error) {
+// aggregates everything into a single response. If autoReboot is true,
+// issues an explicit Reboot RPC after a successful install (matching
+// talosctl's behaviour where install + reboot are orchestrated client-side).
+// The legacy force/stage options are not part of the new API and are ignored.
+func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, tag string, autoReboot bool, rebootMode string) (*mcp.CallToolResult, error) {
 	// Talos requires Containerd to be set on both Pull and Upgrade requests
 	// (zero-value enum is NS_UNKNOWN which the server rejects). Installer
 	// images live in the system containerd namespace; Driver defaults to
@@ -591,21 +612,43 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 		"server_tag":   tag,
 		"pulled_image": pulledName,
 		"messages":     messages,
+		"rebooted":     false,
 	}
 	if exitCode != 0 {
 		out["status"] = "failed"
 		out["exit_code"] = exitCode
-	} else {
-		out["status"] = "ok"
+		return jsonResult(out)
+	}
+	out["status"] = "ok"
+
+	// Phase 3 (optional): activate by rebooting. LifecycleService.Upgrade is
+	// install-only — it writes Talos to the alternate A/B partition and
+	// updates META, but doesn't activate. talosctl issues an explicit Reboot
+	// here; we mirror that by default (auto_reboot=true).
+	if autoReboot {
+		if err := c.Reboot(nCtx, rebootModeOpts(rebootMode)...); err != nil {
+			out["status"] = "installed_no_reboot"
+			out["reboot_error"] = err.Error()
+			return jsonResult(out)
+		}
+		out["rebooted"] = true
 	}
 	return jsonResult(out)
 }
 
 // upgradeViaLegacyAPI is the pre-v1.13 path using MachineService.Upgrade.
 // Honors force/stage/reboot_mode for compatibility with older clusters.
-func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string]any, image, tag string) (*mcp.CallToolResult, error) {
+// autoReboot=false maps to stage=true (legacy primitive for "install but
+// don't reboot"); an explicit stage flag from args wins if set.
+func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string]any, image, tag string, autoReboot bool) (*mcp.CallToolResult, error) {
 	force, _ := args["force"].(bool)
-	stage, _ := args["stage"].(bool)
+	stage, stageSet := args["stage"].(bool)
+	if !stageSet && !autoReboot {
+		// auto_reboot=false on a legacy server: stage the upgrade so the
+		// server doesn't reboot at the end. The operator activates later
+		// via talos_reboot.
+		stage = true
+	}
 
 	upgradeOpts := []client.UpgradeOption{
 		client.WithUpgradeImage(image),
@@ -616,7 +659,7 @@ func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string
 		upgradeOpts = append(upgradeOpts, client.WithUpgradeRebootMode(machine.UpgradeRequest_POWERCYCLE))
 	}
 
-	resp, err := c.UpgradeWithOptions(nCtx, upgradeOpts...)
+	resp, err := c.UpgradeWithOptions(nCtx, upgradeOpts...) //nolint:staticcheck // legacy path, intentionally kept for <v1.13 servers
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (legacy API, server %s): %v", tag, err)), nil
 	}
@@ -624,6 +667,7 @@ func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string
 		"status":     "ok",
 		"api":        "legacy",
 		"server_tag": tag,
+		"rebooted":   !stage, // legacy upgrade reboots unless staged
 		"response":   resp,
 	})
 }
