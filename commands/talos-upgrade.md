@@ -24,16 +24,21 @@ Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from
    - **Extensions installed** — stock images **do not contain extensions**; upgrading to one will remove them on reboot. Build a custom installer first via `/talos-image` (output type `installer`), push it to a registry, and use that image reference here. Confirm with the user before proceeding if extensions are present and only a stock image was provided.
 
 3. **Upgrade control plane nodes** (one at a time):
-   - Use `talos_upgrade` with the target image
-   - Inspect the response: `"api"` is either `"legacy"` (server <v1.13) or `"lifecycle"` (server v1.13+).
-     - **`"api": "legacy"`** — the node auto-reboots as part of the upgrade. Wait for it to come back and rejoin the cluster.
-     - **`"api": "lifecycle"`** — the v1.13 `LifecycleService.Upgrade` is **install-only**: it writes Talos to the alternate A/B partition and updates META, but does **not** reboot. Run `talos_reboot` on the same node next, then wait for it to come back.
-   - Verify health (`talos_health`, `talos_etcd_members`) before proceeding to the next node
+   a. Call `talos_upgrade(node, image)`.
+   b. Inspect the response's `"api"` field:
+      - **`"api": "legacy"`** (server <v1.13) — the node auto-reboots as part of the upgrade. Skip to (d) and wait for it to come back.
+      - **`"api": "lifecycle"`** (server v1.13+) — install-only; the node is *not* rebooted yet. Continue to (c).
+   c. *(v1.13+ only)* Reboot to activate. For workload safety, drain via the Kubernetes MCP first:
+      - `mcp__kubernetes-mcp-server__nodes_cordon` to mark unschedulable
+      - Evict / delete the pods on the node (Kubernetes MCP eviction tooling, or `kubectl drain` via Bash if necessary)
+      - Then `talos_reboot(node)` — this is the bare Talos reboot, **does not drain on its own**, so the drain step is on you
+      - After the node comes back, uncordon via the Kubernetes MCP
+   d. Verify health (`talos_health`, `talos_etcd_members`) before proceeding to the next CP node.
    - **Quorum caution:** for 3-node CP this tolerates one node down; for 2-node CP you have zero margin — the cluster will lose etcd quorum while a CP is upgrading. Warn the user explicitly on a 2-CP cluster.
 
 4. **Upgrade worker nodes:**
-   - Use `talos_upgrade` on each worker (same install-then-reboot pattern as step 3 for v1.13+)
-   - Workers can be upgraded in parallel only if the user confirms and workloads tolerate simultaneous reboots
+   - Use `talos_upgrade` on each worker (same legacy-vs-lifecycle dispatch + optional drain pattern as step 3 for v1.13+).
+   - Workers can be upgraded in parallel only if the user confirms and workloads tolerate simultaneous reboots.
 
 5. **Post-upgrade verification:**
    - Check cluster health: `talos_health`
