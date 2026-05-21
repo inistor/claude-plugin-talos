@@ -1,7 +1,7 @@
 ---
 name: talos-image
 description: Build custom Talos Linux images with extensions using the local imager
-allowed-tools: ["Read", "Write", "Bash", "Grep", "mcp__talos__*"]
+allowed-tools: ["Read", "Write", "Bash", "Grep", "mcp__talos__*", "mcp__plugin_talos_talos__*"]
 argument-hint: "[output-type] [--extensions ext1,ext2]"
 ---
 
@@ -45,9 +45,10 @@ Build a custom Talos Linux image using the local imager container. Follow these 
 
 4. **Execute** the imager command via Bash and confirm the output file appears under `_out/`.
 
-5. **Installer profile only — load, tag, push:**
+5. **Installer profile only — load, tag, push:** the tar's filename matches the build arch (`installer-amd64.tar`, `installer-arm64.tar`, …). Substitute `<arch>` for the build target.
    ```bash
-   docker load -i _out/installer-amd64.tar      # loads as ghcr.io/siderolabs/installer:vX.Y.Z
+   ARCH=amd64   # or arm64, depending on what you built
+   docker load -i "_out/installer-${ARCH}.tar"   # loads as ghcr.io/siderolabs/installer:vX.Y.Z
    docker tag  ghcr.io/siderolabs/installer:vX.Y.Z <registry>/<repo>:vX.Y.Z-custom
    docker push <registry>/<repo>:vX.Y.Z-custom
    ```

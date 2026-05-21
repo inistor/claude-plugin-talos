@@ -1,7 +1,7 @@
 ---
 name: talos-bootstrap
 description: Bootstrap a new Talos Linux cluster from scratch
-allowed-tools: ["Read", "Write", "Bash", "Grep", "mcp__talos__*", "mcp__kubernetes-mcp-server__*"]
+allowed-tools: ["Read", "Write", "Bash", "Grep", "mcp__talos__*", "mcp__plugin_talos_talos__*", "mcp__kubernetes-mcp-server__*"]
 argument-hint: "[cluster-name] [endpoint]"
 ---
 
@@ -33,5 +33,5 @@ Bootstrap a new Talos Linux cluster. Follow these steps:
 - Never bootstrap more than one node
 - Wait for each step to complete before proceeding
 - Use `yq` or `jq` for parsing any YAML/JSON output, not grep
-- If the cluster will use system extensions, build a custom installer first via `/talos-image` and pass it through a `.machine.install.image` patch at step 2
+- If the cluster will use system extensions, build a custom installer first via `/talos-image`. Then either (a) pass it to `talosctl gen config` in step 2 via `--config-patch '@patch.yaml'` where the patch sets `.machine.install.image`, or (b) edit the generated `controlplane.yaml` / `worker.yaml` to set `.machine.install.image` before step 4 (apply)
 - Report progress at each step

@@ -1,7 +1,7 @@
 ---
 name: talos-upgrade
 description: Upgrade Talos Linux and/or Kubernetes on a cluster
-allowed-tools: ["Read", "Bash", "Grep", "mcp__talos__*", "mcp__kubernetes-mcp-server__*"]
+allowed-tools: ["Read", "Bash", "Grep", "mcp__talos__*", "mcp__plugin_talos_talos__*", "mcp__kubernetes-mcp-server__*"]
 argument-hint: "[talos-version|k8s-version]"
 ---
 
@@ -43,6 +43,7 @@ Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from
 
 Kubernetes upgrades use `talosctl upgrade-k8s` — a complex client-side orchestration that patches configs, pre-pulls images, and monitors rollout across all nodes. As of Talos v1.13 this stays client-side (the new `LifecycleService` API covers Talos OS upgrades only).
 
+0. **Precondition:** verify `talosctl` is installed and on PATH. Run `command -v talosctl >/dev/null || { echo "talosctl required for k8s upgrade (no MCP equivalent); install it first"; exit 1; }`. If missing, tell the user to install it (`brew install siderolabs/tap/talosctl` or download from https://github.com/siderolabs/talos/releases) before proceeding — there is no MCP equivalent for this path.
 1. **Pre-flight:** Create etcd snapshot via `mcp__talos__talos_etcd_snapshot`
 2. **Dry-run:** `talosctl upgrade-k8s --to <version> --dry-run` via Bash and review the plan with the user
 3. **Run:** `talosctl upgrade-k8s --to <version>` via Bash

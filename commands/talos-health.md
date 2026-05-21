@@ -1,7 +1,7 @@
 ---
 name: talos-health
 description: Check the health status of a Talos Linux cluster
-allowed-tools: ["Read", "Bash", "Grep", "mcp__talos__*", "mcp__kubernetes-mcp-server__*"]
+allowed-tools: ["Read", "Bash", "Grep", "mcp__talos__*", "mcp__plugin_talos_talos__*", "mcp__kubernetes-mcp-server__*"]
 ---
 
 Perform a comprehensive health check on the Talos cluster:
