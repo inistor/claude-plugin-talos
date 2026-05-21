@@ -536,7 +536,7 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 }
 
 // drainUpgradeReboot is the full talosctl-equivalent upgrade flow for
-// auto_reboot=true: cordon + drain (via the kubectl drain library) -> install
+// auto_reboot=true: cordon -> drain (via the kubectl drain library) -> install
 // -> reboot -> wait for the Talos node to come back -> wait for K8s Ready ->
 // uncordon. K8s steps are skipped gracefully if the target isn't a Kubernetes
 // node (e.g. fresh cluster, or non-K8s Talos use case).
@@ -545,16 +545,21 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 // — needed for cluster-level RPCs like Kubeconfig that workers cannot serve.
 // nCtx is the node-targeted context for per-node operations (Reboot, Version,
 // COSI resource reads on the target).
-func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args map[string]any, image, tag string, useLifecycle bool, rebootMode string) (*mcp.CallToolResult, error) {
+//
+// Uncordon runs in a deferred closure so the node is never left cordoned by a
+// failure earlier in the flow (drain timeout, install error, reboot stuck,
+// etc.). If the explicit uncordon at the end succeeds, the defer is a no-op
+// (RunCordonOrUncordon is idempotent).
+func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args map[string]any, image, tag string, useLifecycle bool, rebootMode string) (finalRes *mcp.CallToolResult, _ error) {
 	stages := []string{}
 	addStage := func(msg string) { stages = append(stages, msg) }
+	payload := map[string]any{}
+	emit := func() { payload["stages"] = stages; finalRes, _ = jsonResult(payload) }
 
-	// Phase 0 — try to set up K8s drain/uncordon. Failures here are tolerated:
-	// the upgrade can proceed without K8s orchestration if the node isn't
-	// joined or the API isn't reachable. The k8s.Nodename COSI resource is
-	// per-node so we ask the target (nCtx); the kubeconfig is cluster-wide
-	// and only CPs can serve it, so we fetch it via the base context which
-	// routes through the talosconfig's CP endpoints.
+	// Phase 0 — discover K8s. Tolerant of failures: upgrade still proceeds.
+	// k8s.Nodename is a per-node COSI resource (use nCtx); kubeconfig is
+	// cluster-wide and only CPs serve it (use baseCtx, which routes through
+	// the talosconfig endpoints).
 	nodeName, _ := getKubernetesNodeName(nCtx, c)
 	var clientset *kubernetes.Clientset
 	if nodeName != "" {
@@ -563,19 +568,56 @@ func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args ma
 			addStage(fmt.Sprintf("k8s skipped: %v", csErr))
 		} else {
 			clientset = cs
+			payload["k8s_node_name"] = nodeName
 		}
 	} else {
 		addStage("k8s skipped: node not registered as a Kubernetes member")
 	}
 
-	// Phase 1 — cordon + drain (if we have a clientset).
-	if clientset != nil {
-		if err := cordonAndDrain(nCtx, clientset, nodeName, defaultDrainTimeout, addStage); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("drain failed: %v\nstages: %s", err, strings.Join(stages, " | "))), nil
+	// Defer the uncordon. didCordon controls whether the defer attempts it
+	// (no-op if we never cordoned). Set to false after a successful explicit
+	// uncordon so the defer doesn't double-call (harmless either way, but
+	// avoids spurious "node already uncordoned" log noise).
+	var didCordon bool
+	defer func() {
+		if didCordon && clientset != nil {
+			if uErr := uncordonNode(baseCtx, clientset, nodeName); uErr != nil {
+				if _, already := payload["uncordoned"]; !already {
+					payload["uncordon_error"] = uErr.Error()
+				}
+			} else if _, already := payload["uncordoned"]; !already {
+				payload["uncordoned"] = true
+				addStage(fmt.Sprintf("node %s uncordoned (deferred)", nodeName))
+			}
+			emit()
 		}
+	}()
+
+	// Phase 1 — cordon (separate from drain so the deferred uncordon above
+	// covers any failure after this point).
+	if clientset != nil {
+		if err := cordonNode(baseCtx, clientset, nodeName); err != nil {
+			payload["status"] = "cordon_failed"
+			payload["error"] = err.Error()
+			emit()
+			return finalRes, nil
+		}
+		didCordon = true
+		addStage(fmt.Sprintf("cordoned node %s", nodeName))
+
+		// Phase 2 — drain. PDB-blocked pods retry internally; we hit
+		// defaultDrainTimeout if a pod can't be evicted (e.g. PDB with
+		// maxUnavailable=0). Defer-uncordon will recover.
+		if err := drainNodePods(baseCtx, clientset, nodeName, defaultDrainTimeout, addStage); err != nil {
+			payload["status"] = "drain_failed"
+			payload["error"] = err.Error()
+			emit()
+			return finalRes, nil
+		}
+		addStage(fmt.Sprintf("node %s drained", nodeName))
 	}
 
-	// Phase 2 — install (and reboot, since we got here only when auto_reboot=true).
+	// Phase 3 — install (and reboot, since auto_reboot=true got us here).
 	var installRes *mcp.CallToolResult
 	var installErr error
 	if useLifecycle {
@@ -584,66 +626,57 @@ func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args ma
 		installRes, installErr = upgradeViaLegacyAPI(nCtx, c, args, image, tag, true)
 	}
 	if installErr != nil {
-		// installRes already encodes the error; uncordon best-effort and return it.
-		if clientset != nil {
-			_ = uncordonNode(nCtx, clientset, nodeName)
-		}
+		// install returned an error result already. Re-emit it (defer will uncordon).
 		return installRes, nil
 	}
 	if installRes == nil {
-		return mcp.NewToolResultError("install returned no result"), nil
-	}
-	// Extract install JSON payload so we can enrich it with drain/wait outcomes.
-	installPayload := extractJSONResult(installRes)
-	if status, _ := installPayload["status"].(string); status != "ok" {
-		// install reported a failure (e.g. installed_no_reboot). Uncordon and bail
-		// without waiting for a reboot that didn't happen.
-		if clientset != nil {
-			if err := uncordonNode(nCtx, clientset, nodeName); err != nil {
-				installPayload["uncordon_error"] = err.Error()
-			} else {
-				installPayload["uncordoned"] = true
-			}
-		}
-		installPayload["stages"] = stages
-		return jsonResult(installPayload)
+		payload["status"] = "internal_error"
+		payload["error"] = "install returned no result"
+		emit()
+		return finalRes, nil
 	}
 
-	// Phase 3 — wait for the Talos node to reboot and come back.
+	// Merge install payload into our running payload (preserve our stages/k8s_node_name).
+	for k, v := range extractJSONResult(installRes) {
+		payload[k] = v
+	}
+	if status, _ := payload["status"].(string); status != "ok" {
+		// install reported failure (e.g. installed_no_reboot). Bail; defer uncordons.
+		emit()
+		return finalRes, nil
+	}
+
+	// Phase 4 — wait for Talos to come back.
 	addStage("waiting for talos to reboot")
 	if err := waitForTalosReboot(nCtx, c, 10*time.Minute); err != nil {
-		installPayload["wait_error"] = err.Error()
-		installPayload["status"] = "rebooted_no_wait"
-		if clientset != nil {
-			_ = uncordonNode(nCtx, clientset, nodeName)
-			installPayload["uncordoned"] = true
-		}
-		installPayload["stages"] = stages
-		return jsonResult(installPayload)
+		payload["wait_error"] = err.Error()
+		payload["status"] = "rebooted_no_wait"
+		emit()
+		return finalRes, nil
 	}
 	addStage("talos reachable again")
-	installPayload["talos_back"] = true
+	payload["talos_back"] = true
 
-	// Phase 4 — wait for the K8s node to be Ready (only if we have a clientset).
+	// Phase 5 — wait for K8s Ready (only if we have a clientset).
 	if clientset != nil {
-		if err := waitNodeReady(nCtx, clientset, nodeName, defaultNodeReadyTimeout); err != nil {
-			installPayload["k8s_ready_error"] = err.Error()
+		if err := waitNodeReady(baseCtx, clientset, nodeName, defaultNodeReadyTimeout); err != nil {
+			payload["k8s_ready_error"] = err.Error()
 		} else {
 			addStage(fmt.Sprintf("node %s is Ready", nodeName))
-			installPayload["k8s_ready"] = true
+			payload["k8s_ready"] = true
 		}
-		// Phase 5 — uncordon (always attempt; we cordoned in phase 1).
-		if err := uncordonNode(nCtx, clientset, nodeName); err != nil {
-			installPayload["uncordon_error"] = err.Error()
+		// Phase 6 — explicit uncordon. Mark didCordon=false so the defer skips.
+		if err := uncordonNode(baseCtx, clientset, nodeName); err != nil {
+			payload["uncordon_error"] = err.Error()
 		} else {
 			addStage(fmt.Sprintf("node %s uncordoned", nodeName))
-			installPayload["uncordoned"] = true
+			payload["uncordoned"] = true
+			didCordon = false
 		}
-		installPayload["k8s_node_name"] = nodeName
 	}
 
-	installPayload["stages"] = stages
-	return jsonResult(installPayload)
+	emit()
+	return finalRes, nil
 }
 
 // extractJSONResult unmarshals the JSON-encoded text in an MCP tool result back

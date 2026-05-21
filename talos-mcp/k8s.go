@@ -62,21 +62,31 @@ func newK8sClientset(ctx context.Context, c *client.Client) (*kubernetes.Clients
 	return cs, nil
 }
 
-// cordonAndDrain cordons the named Kubernetes node and evicts all evictable
-// pods, matching talosctl's `--drain=true` defaults (Force, IgnoreAllDaemonSets,
-// DeleteEmptyDirData, pod-grace-period from pod spec). onMsg is called for each
-// significant progress step so the caller can stream updates back to the user.
-func cordonAndDrain(ctx context.Context, cs *kubernetes.Clientset, nodeName string, timeout time.Duration, onMsg func(string)) error {
+// cordonNode marks the Kubernetes node as unschedulable. Separated from drain
+// so the caller can defer the uncordon to run even if drain later fails.
+func cordonNode(ctx context.Context, cs *kubernetes.Clientset, nodeName string) error {
+	node, err := cs.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get node %q: %w", nodeName, err)
+	}
+	helper := &drain.Helper{Ctx: ctx, Client: cs, Out: io.Discard, ErrOut: io.Discard}
+	if err := drain.RunCordonOrUncordon(helper, node, true); err != nil {
+		return fmt.Errorf("cordon node %q: %w", nodeName, err)
+	}
+	return nil
+}
+
+// drainNodePods evicts all evictable pods on the named node, matching talosctl's
+// `--drain=true` defaults (Force, IgnoreAllDaemonSets, DeleteEmptyDirData,
+// pod-grace-period from pod spec). PDB-blocked pods are retried by the drain
+// library until the timeout expires. onMsg is called for each eviction so the
+// caller can stream updates back to the user.
+func drainNodePods(ctx context.Context, cs *kubernetes.Clientset, nodeName string, timeout time.Duration, onMsg func(string)) error {
 	if timeout <= 0 {
 		timeout = defaultDrainTimeout
 	}
 	dCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-
-	node, err := cs.CoreV1().Nodes().Get(dCtx, nodeName, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("get node %q: %w", nodeName, err)
-	}
 
 	helper := &drain.Helper{
 		Ctx:                 dCtx,
@@ -96,16 +106,9 @@ func cordonAndDrain(ctx context.Context, cs *kubernetes.Clientset, nodeName stri
 			onMsg(fmt.Sprintf("%s pod %s/%s", verb, pod.Namespace, pod.Name))
 		},
 	}
-
-	onMsg(fmt.Sprintf("cordoning node %s", nodeName))
-	if err := drain.RunCordonOrUncordon(helper, node, true); err != nil {
-		return fmt.Errorf("cordon node %q: %w", nodeName, err)
-	}
-	onMsg(fmt.Sprintf("draining node %s", nodeName))
 	if err := drain.RunNodeDrain(helper, nodeName); err != nil {
 		return fmt.Errorf("drain node %q: %w", nodeName, err)
 	}
-	onMsg(fmt.Sprintf("node %s drained", nodeName))
 	return nil
 }
 
