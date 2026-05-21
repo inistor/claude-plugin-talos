@@ -93,10 +93,11 @@ docker run --rm -t \
   --system-extension-image ghcr.io/siderolabs/nvidia-container-toolkit:<tag-for-v1.13.2>
 ```
 
-After building the installer, load it into the local Docker daemon, tag it for your registry, and push so the cluster nodes can pull it:
+After building the installer, load it into the local Docker daemon, tag it for your registry, and push so the cluster nodes can pull it. **Note:** the imager tags the loaded image as `installer-base:vX.Y.Z` (not `installer:vX.Y.Z`). Capture the loaded reference from `docker load` rather than guessing:
 ```bash
-docker load -i _out/installer-amd64.tar
-docker tag  ghcr.io/siderolabs/installer:v1.13.2 <registry>/<repo>:v1.13.2-custom
+LOADED=$(docker load -i _out/installer-amd64.tar | awk '/Loaded image:/ {print $NF}')
+# $LOADED will be ghcr.io/siderolabs/installer-base:v1.13.2 (or installer-arm64 for arm64 builds)
+docker tag  "$LOADED" <registry>/<repo>:v1.13.2-custom
 docker push <registry>/<repo>:v1.13.2-custom
 ```
 Then reference `<registry>/<repo>:v1.13.2-custom` in `talos_upgrade` or in `.machine.install.image` at install time.

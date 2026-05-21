@@ -45,14 +45,16 @@ Build a custom Talos Linux image using the local imager container. Follow these 
 
 4. **Execute** the imager command via Bash and confirm the output file appears under `_out/`.
 
-5. **Installer profile only — load, tag, push:** the tar's filename matches the build arch (`installer-amd64.tar`, `installer-arm64.tar`, …). Substitute `<arch>` for the build target.
+5. **Installer profile only — load, tag, push:** the tar's filename matches the build arch (`installer-amd64.tar`, `installer-arm64.tar`, …). The imager tags the loaded image as `ghcr.io/siderolabs/installer-base:vX.Y.Z` (note: `installer-base`, **not** `installer` — easy to miss). Capture the loaded reference from `docker load` rather than guessing:
    ```bash
    ARCH=amd64   # or arm64, depending on what you built
-   docker load -i "_out/installer-${ARCH}.tar"   # loads as ghcr.io/siderolabs/installer:vX.Y.Z
-   docker tag  ghcr.io/siderolabs/installer:vX.Y.Z <registry>/<repo>:vX.Y.Z-custom
+   # docker load prints "Loaded image: ghcr.io/siderolabs/installer-base:vX.Y.Z" — capture it.
+   LOADED=$(docker load -i "_out/installer-${ARCH}.tar" | awk '/Loaded image:/ {print $NF}')
+   echo "loaded: $LOADED"
+   docker tag  "$LOADED" <registry>/<repo>:vX.Y.Z-custom
    docker push <registry>/<repo>:vX.Y.Z-custom
    ```
-   Then the upgrade flow can reference `<registry>/<repo>:vX.Y.Z-custom` via `talos_upgrade` (or in `.machine.install.image` at install time).
+   Then the upgrade flow can reference `<registry>/<repo>:vX.Y.Z-custom` via `talos_upgrade` (or in `.machine.install.image` at install time). The image content is the same whether the source tag was `installer` or `installer-base`; only the reference name differs.
 
 6. **Report** the output file location and any relevant details (size, SHA, pushed image ref).
 
