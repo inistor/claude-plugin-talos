@@ -1,6 +1,6 @@
 # Networking Reference
 
-Docs: https://docs.siderolabs.com/talos/v1.12/talos-guides/network/
+Docs: https://docs.siderolabs.com/talos/v1.13/talos-guides/network/
 
 ## Interface Configuration
 
@@ -138,7 +138,9 @@ machine:
 ```
 
 ### KubeSpan
-Mesh networking across sites — enabled in machine config:
+Mesh networking across sites. **As of v1.13** the preferred configuration is the standalone `KubeSpanConfig` document; the legacy `.machine.network.kubespan` field still works for backward compatibility.
+
+Legacy form (still works):
 ```yaml
 machine:
   network:
@@ -147,6 +149,16 @@ machine:
       advertiseKubernetesNetworks: false
       mtu: 1420
 ```
+
+v1.13 form (`KubeSpanConfig` document — apply alongside the v1alpha1 Config):
+```yaml
+apiVersion: v1alpha1
+kind: KubeSpanConfig
+# enabled, mtu, advertiseKubernetesNetworks, ...
+# excludeAdvertisedNetworks: list of CIDRs to omit from advertisement (v1.13)
+```
+
+`excludeAdvertisedNetworks` filters which CIDRs are advertised to peers. Routing must be symmetric for any pair of peers — if one peer excludes a network, the other must too. See https://docs.siderolabs.com/talos/v1.13/reference/configuration/network/kubespanconfig/ for the full schema.
 
 ### Ingress Firewall
 ```yaml
@@ -173,6 +185,8 @@ machine:
 
 Host DNS runs on `169.254.116.108` — all pod DNS queries route through it.
 
+**v1.13 behavior change**: `machine.network.nameservers` now overwrites lower-layer nameservers (defaults, platform) when set. Previously, a smart merge preserved IPv4 or IPv6 entries from lower layers if the machine config specified only one type. If you specify only IPv4 nameservers, IPv6 entries from platform defaults are dropped — configure both families explicitly if needed. The standalone `ResolverConfig` document offers the same control.
+
 ### Time Servers
 ```yaml
 machine:
@@ -182,6 +196,32 @@ machine:
       - pool.ntp.org
     bootTimeout: 2m0s
 ```
+
+## v1.13 Network Configuration Documents
+
+These are standalone documents applied alongside the v1alpha1 `Config` (separated by `---`). See the docs URL at the top of this file for full schemas.
+
+- **`RoutingRuleConfig`** — policy routing rules (`ip rule`-style: source/dest CIDR, FW mark, tos → table lookup).
+- **`VRFConfig`** — Virtual Routing and Forwarding. Define VRF instances and associate interfaces.
+- **`LinkAliasConfig`** — stable alias names for interfaces. As of v1.13 supports the `%d` format verb (e.g., `net%d`): when the alias contains `%d`, the selector can match multiple links and each matched link receives a sequential alias (`net0`, `net1`, …) ordered by hardware address. Links already aliased by an earlier config are skipped. Useful for `BondConfig` and `BridgeConfig` member interfaces on varying hardware.
+- **`TCPProbeConfig`** — TCP probes for network-reachability checks. Lets you define a custom connectivity condition that Talos can wait on.
+- **`KubeSpanConfig`** — see KubeSpan section above (replaces the legacy `.machine.network.kubespan`).
+- **`ResolverConfig`** — DNS resolvers (overwrites lower layers, like the legacy field; see DNS & Resolvers above).
+
+## Flannel CNI with Network Policies (v1.13)
+
+Talos v1.13 optionally deploys Flannel with [kube-network-policies](https://github.com/kubernetes-sigs/kube-network-policies) for NetworkPolicy enforcement:
+
+```yaml
+cluster:
+  network:
+    cni:
+      name: flannel
+      flannel:
+        kubeNetworkPoliciesEnabled: true
+```
+
+If the cluster is already running, sync the bootstrap manifests after applying the patch to deploy the new CNI configuration.
 
 ## Diagnostics
 

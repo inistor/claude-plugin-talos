@@ -2,12 +2,12 @@
 
 A Claude Code plugin for managing Talos Linux clusters. Provides MCP tools, skills, commands, and an agent for cluster lifecycle management, troubleshooting, image creation, and more.
 
-Targets **Talos Linux v1.12**.
+Targets **Talos Linux v1.13**.
 
 ## Prerequisites
 
 - `docker` — required for the MCP server and for building custom images with imager
-- `talosctl` v1.12+ — for operations not covered by the MCP (resource listing, config generation, patching)
+- `talosctl` v1.13+ — for operations not covered by the MCP (config generation, Kubernetes upgrade)
 - `yq` — for YAML parsing in hook scripts
 
 ## Installation

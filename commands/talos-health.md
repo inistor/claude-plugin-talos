@@ -16,7 +16,11 @@ Perform a comprehensive health check on the Talos cluster:
 
 5. **System resources** — Check `mcp__talos__talos_memory` and `mcp__talos__talos_cpu` for resource pressure.
 
-6. **Disk usage** — Check `mcp__talos__talos_disks` and `mcp__talos__talos_mounts` for storage issues.
+6. **Storage** — Use the COSI-resource MCP tools (upstream-preferred over the legacy `talos_disks`/`talos_mounts` wrappers):
+   - `mcp__talos__talos_discovered_volumes` — block devices and partitions
+   - `mcp__talos__talos_get` with `resource_type: systemdisk` — identify the system disk
+   - `mcp__talos__talos_get` with `resource_type: mountstatus` — current mount points
+   - `mcp__talos__talos_disk_usage` — filesystem usage on key paths (/, /var, /system/state)
 
 7. **Kubernetes** — Use Kubernetes MCP tools:
    - `mcp__kubernetes-mcp-server__nodes_top` — Node resource usage

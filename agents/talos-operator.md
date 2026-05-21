@@ -5,7 +5,7 @@ description: |
 
   <example>
   Context: User wants to upgrade their Talos cluster
-  user: "Upgrade my Talos cluster to v1.12.3"
+  user: "Upgrade my Talos cluster to v1.13.2"
   assistant: "I'll use the talos-operator agent to plan and execute the Talos upgrade."
   <commentary>
   Cluster upgrade is a multi-step Talos operation requiring careful sequencing — upgrade control plane nodes first, then workers. The talos-operator agent handles this.

@@ -9,10 +9,10 @@ description: |
   "etcd is unhealthy", "node won't join the cluster", "configure bonding on Talos",
   "bootstrap a new Talos cluster", "reset a Talos node", "add a worker node",
   "restore etcd from snapshot", or "recover a failed control plane node".
-version: 1.12.0
+version: 1.13.2
 ---
 
-This skill covers Talos Linux v1.12. All documentation references point to https://docs.siderolabs.com/talos/v1.12/.
+This skill covers Talos Linux v1.13. All documentation references point to https://docs.siderolabs.com/talos/v1.13/.
 
 ## Tool Usage Rules
 
@@ -93,13 +93,14 @@ Modify running configs with `talos_patch(patch, node)` — applies a strategic m
 1. Check current versions (`talos_version`) → 2. Verify health (`talos_health`) → 3. Snapshot etcd (recommended: `talos_etcd_snapshot`) → 4. Upgrade CP nodes (`talos_upgrade`) → 5. Upgrade workers → 6. Verify health
 
 **Important upgrade rules:**
-- **Version path**: Must upgrade through all intermediate minor releases (e.g., 1.10 → 1.11 → 1.12, not 1.10 → 1.12 directly)
+- **Version path**: Must upgrade through all intermediate minor releases (e.g., 1.11 → 1.12 → 1.13, not 1.11 → 1.13 directly)
+- **Custom installer for extensions**: Stock installer images contain no extensions — upgrading a cluster that uses extensions to a stock image will strip them on reboot. Build a matching custom installer via `/talos-image` first and pass that image to `talos_upgrade`
 - **CP serialization**: Talos automatically serializes CP upgrades and refuses if etcd quorum would be lost — no need to manually enforce one-at-a-time
 - **Automatic rollback**: If the upgraded system fails to boot, the A/B bootloader automatically reverts. Manual `talos_rollback` is for reverting a successful but unwanted upgrade
 - **Staged upgrades**: Use `stage: true` if in-place upgrade can't unmount filesystems
 
 ### Upgrade Kubernetes
-Use `talosctl upgrade-k8s --to <version>` via Bash. This is a complex client-side orchestration that patches all nodes' configs, pre-pulls images, and monitors rollout. Do NOT attempt to replicate this manually with `talos_patch` — use the talosctl command directly. Use `--dry-run` first to preview the plan. The command is resumable if interrupted.
+Use `talosctl upgrade-k8s --to <version>` via Bash. This is a complex client-side orchestration that patches all nodes' configs, pre-pulls images, and monitors rollout. As of v1.13 this remains client-side — the new `LifecycleService` API covers Talos OS install/upgrade only, not the Kubernetes control-plane upgrade flow (which interleaves Talos API and Kubernetes API calls). Do NOT attempt to replicate this manually with `talos_patch` — use the talosctl command directly. Use `--dry-run` first to preview the plan. The command is resumable if interrupted.
 
 ### Scale Up
 Generate worker config for the cluster, apply to new node. It joins automatically via discovery.
@@ -112,14 +113,18 @@ For workers: `talos_reset(node)`, then `kubectl delete node <name>` via Bash. Fo
 
 ## Boot Assets & Images
 
-Use the local **imager** container to build custom Talos images:
+Use the local **imager** container to build custom Talos images. As of v1.13 the imager runs rootless, so `--privileged` and `-v /dev:/dev` are only needed for bootable-media profiles (iso, metal, disk-image, cloud) that use loop devices. The `installer` profile does not need them. Always bind-mount a host directory to `/out` for output.
 
 ```bash
-docker run --rm -t -v /dev:/dev --privileged \
-  ghcr.io/siderolabs/imager:v1.12.0 \
+mkdir -p _out
+docker run --rm -t \
+  -v "$PWD/_out:/out" \
+  ghcr.io/siderolabs/imager:v1.13.2 \
   <output-type> \
-  --system-extension-image ghcr.io/siderolabs/<extension>:latest
+  --system-extension-image ghcr.io/siderolabs/<extension>:<tag>
 ```
+
+Extension tags must match the Talos version — never use `:latest`. Look up matching tags at https://github.com/siderolabs/extensions/releases.
 
 Output types: `iso`, `metal`, `disk-image`, `installer`, `aws`, `azure`, `gcp`, etc.
 
@@ -144,7 +149,7 @@ Talos networking is configured in `machine.network`. Key concepts:
 - **Bonds/Bridges/VLANs**: logical interfaces with `bond`, `bridge`, `vlans` config
 - **VIPs**: shared virtual IPs for HA control plane (`vip.ip`)
 - **WireGuard**: built-in support via `wireguard` interface config
-- **KubeSpan**: Talos mesh networking across sites
+- **KubeSpan**: Talos mesh networking across sites — configured via the `KubeSpanConfig` document as of v1.13 (`.machine.network.kubespan` is deprecated but still works); `excludeAdvertisedNetworks` filters which CIDRs are advertised
 - **Firewall**: ingress rules via `networkRuleConfig` resources
 
 See `references/networking.md` for configuration patterns.

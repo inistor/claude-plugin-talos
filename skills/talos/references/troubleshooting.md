@@ -1,6 +1,6 @@
 # Troubleshooting Reference
 
-Docs: https://docs.siderolabs.com/talos/v1.12/advanced/troubleshooting/
+Docs: https://docs.siderolabs.com/talos/v1.13/advanced/troubleshooting/
 
 ## Diagnostic Commands (MCP tools)
 
@@ -11,7 +11,7 @@ Docs: https://docs.siderolabs.com/talos/v1.12/advanced/troubleshooting/
 | Service logs | `talos_logs(service)` | kubelet, etcd, apid, machined |
 | Kernel logs | `talos_dmesg` | Hardware, driver issues |
 | etcd | `talos_etcd_members`, `talos_etcd_status` | Member count, leader |
-| Disk space | `talos_disks`, `talos_mounts` | Full disks |
+| Disk space | `talos_discovered_volumes`, `talos_get(mountstatus)`, `talos_disk_usage` | Full disks, mount state (upstream-preferred over the legacy `talos_disks`/`talos_mounts` wrappers) |
 | Memory | `talos_memory` | OOM pressure |
 | Network | `talos_netstat` | Connectivity |
 | Containers | `talos_containers` | Stuck containers |
@@ -61,15 +61,29 @@ Docs: https://docs.siderolabs.com/talos/v1.12/advanced/troubleshooting/
 5. `talos_dmesg` — check for NIC driver issues
 
 ### Disk Full
-1. `talos_mounts` — check available space
+1. `talos_disk_usage` for filesystem usage; `talos_get(mountstatus)` for current mounts; `talos_discovered_volumes` for block devices
 2. Common culprits: etcd DB, container images, logs
 3. Defrag etcd if DB is large
-4. Pull through image cache may fill `/var`
+4. Pull-through image cache may fill `/var`
 
 ### Certificate Issues
 1. `talos_get(resource_type="certificates")` — check cert status (use generic get for this resource)
 2. Certificates auto-rotate, but CA must be rotated manually
 3. If expired: apply new config with fresh CA
+
+## Interactive Debugging (v1.13)
+
+Talos v1.13 introduces `talosctl debug`, which runs and attaches to a privileged debug container with a user-provided image. There is no MCP equivalent today — use Bash:
+
+```bash
+talosctl -n <node> debug --image <debug-image> -- <command>
+```
+
+Use it sparingly: the debug container has elevated privileges. For routine diagnostics prefer the MCP tools above.
+
+## Image Management (v1.13)
+
+Talos v1.13 ships new APIs for managing container images on the node (list / pull with progress / import / remove). `talosctl image pull`, `talosctl image list`, and `talosctl image remove` are wired to these APIs. The MCP currently exposes `talos_image_list` only — for the new pull/import/remove flows, use `talosctl image …` via Bash.
 
 ## Resource Types for `talos_get`
 

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -466,6 +468,31 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	return mcp.NewToolResultText("Reset initiated."), nil
 }
 
+// versionTagRE matches the leading "vMAJOR.MINOR" of a Talos version tag.
+var versionTagRE = regexp.MustCompile(`^v(\d+)\.(\d+)`)
+
+// serverSupportsLifecycleService probes the target node for its Talos version
+// and reports whether it is v1.13 or newer (i.e. exposes LifecycleService).
+// Returns (supported, tag, error). On parse failure the tag is returned for diagnostics.
+func serverSupportsLifecycleService(c *client.Client, nCtx context.Context) (bool, string, error) {
+	resp, err := c.Version(nCtx)
+	if err != nil {
+		return false, "", err
+	}
+	msgs := resp.GetMessages()
+	if len(msgs) == 0 {
+		return false, "", fmt.Errorf("no version messages returned")
+	}
+	tag := msgs[0].GetVersion().GetTag()
+	m := versionTagRE.FindStringSubmatch(tag)
+	if m == nil {
+		return false, tag, fmt.Errorf("could not parse version tag %q", tag)
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	return major > 1 || (major == 1 && minor >= 13), tag, nil
+}
+
 func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	c, nCtx, err := setupClient(ctx, req)
 	if err != nil {
@@ -475,6 +502,70 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 
 	args := req.GetArguments()
 	image, _ := args["image"].(string)
+	if image == "" {
+		return mcp.NewToolResultError("image is required"), nil
+	}
+
+	useLifecycle, tag, err := serverSupportsLifecycleService(c, nCtx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("version probe failed: %v", err)), nil
+	}
+
+	if useLifecycle {
+		return upgradeViaLifecycleService(nCtx, c, image, tag)
+	}
+	return upgradeViaLegacyAPI(nCtx, c, args, image, tag)
+}
+
+// upgradeViaLifecycleService is the v1.13+ path. Streams progress updates and
+// aggregates them into a single response. The legacy force/stage/reboot_mode
+// options are not part of the new API and are ignored if present in args.
+func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, tag string) (*mcp.CallToolResult, error) {
+	stream, err := c.LifecycleClient.Upgrade(nCtx, &machine.LifecycleServiceUpgradeRequest{
+		Source: &machine.InstallArtifactsSource{ImageName: image},
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (LifecycleService, server %s): %v", tag, err)), nil
+	}
+
+	var (
+		messages []string
+		exitCode int32
+	)
+	for {
+		resp, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("upgrade stream failed (server %s): %v\nprogress so far:\n%s", tag, err, strings.Join(messages, "\n"))), nil
+		}
+		prog := resp.GetProgress()
+		if msg := prog.GetMessage(); msg != "" {
+			messages = append(messages, msg)
+		}
+		if code := prog.GetExitCode(); code != 0 {
+			exitCode = code
+		}
+	}
+
+	out := map[string]any{
+		"api":        "lifecycle",
+		"server_tag": tag,
+		"messages":   messages,
+	}
+	if exitCode != 0 {
+		out["status"] = "failed"
+		out["exit_code"] = exitCode
+	} else {
+		out["status"] = "ok"
+	}
+	return jsonResult(out)
+}
+
+// upgradeViaLegacyAPI is the pre-v1.13 path using MachineService.Upgrade.
+// Honors force/stage/reboot_mode for compatibility with older clusters.
+func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string]any, image, tag string) (*mcp.CallToolResult, error) {
 	force, _ := args["force"].(bool)
 	stage, _ := args["stage"].(bool)
 
@@ -483,16 +574,20 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		client.WithUpgradeForce(force),
 		client.WithUpgradeStage(stage),
 	}
-
 	if rebootMode, ok := args["reboot_mode"].(string); ok && strings.ToLower(rebootMode) == "powercycle" {
 		upgradeOpts = append(upgradeOpts, client.WithUpgradeRebootMode(machine.UpgradeRequest_POWERCYCLE))
 	}
 
 	resp, err := c.UpgradeWithOptions(nCtx, upgradeOpts...)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (legacy API, server %s): %v", tag, err)), nil
 	}
-	return jsonResult(resp)
+	return jsonResult(map[string]any{
+		"status":     "ok",
+		"api":        "legacy",
+		"server_tag": tag,
+		"response":   resp,
+	})
 }
 
 // --- Diagnostics ---

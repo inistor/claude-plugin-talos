@@ -90,11 +90,11 @@ func registerTools(s *server.MCPServer) {
 	), handleReset)
 
 	s.AddTool(mcp.NewTool("talos_upgrade",
-		mcp.WithDescription("Upgrade Talos on a node to a new version."),
-		mcp.WithString("image", mcp.Required(), mcp.Description("Talos image reference (e.g. ghcr.io/siderolabs/installer:v1.12.3)")),
-		mcp.WithBoolean("force", mcp.Description("Force upgrade, skip etcd health checks (may cause data loss)")),
-		mcp.WithBoolean("stage", mcp.Description("Stage the upgrade to perform after next reboot")),
-		mcp.WithString("reboot_mode", mcp.Description("Reboot mode during upgrade: default, powercycle")),
+		mcp.WithDescription("Upgrade Talos on a node. Auto-detects the server version and routes accordingly: LifecycleService.Upgrade on v1.13+ (streaming progress, returns aggregated messages), or the legacy MachineService.Upgrade on <v1.13 servers (force/stage/reboot_mode honored). The response includes the API path taken (\"api\": \"lifecycle\" or \"legacy\") and the detected server tag."),
+		mcp.WithString("image", mcp.Required(), mcp.Description("Talos image reference (e.g. ghcr.io/siderolabs/installer:v1.13.2). If the cluster uses extensions, point to a custom installer built with /talos-image — stock images strip extensions on reboot.")),
+		mcp.WithBoolean("force", mcp.Description("(<v1.13 only) Force upgrade, skip etcd health checks (may cause data loss). Ignored on v1.13+ servers — LifecycleService does not expose this option.")),
+		mcp.WithBoolean("stage", mcp.Description("(<v1.13 only) Stage the upgrade to perform after next reboot. Ignored on v1.13+ servers.")),
+		mcp.WithString("reboot_mode", mcp.Description("(<v1.13 only) Reboot mode during upgrade: default, powercycle. Ignored on v1.13+ servers.")),
 		mcp.WithString("node", mcp.Description("Target node IP or hostname")),
 		mcp.WithString("context", mcp.Description("Talosconfig context name")),
 	), handleUpgrade)

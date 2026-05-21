@@ -1,6 +1,6 @@
 # Machine Configuration Reference (v1alpha1)
 
-Docs: https://docs.siderolabs.com/talos/v1.12/reference/configuration/v1alpha1/config/
+Docs: https://docs.siderolabs.com/talos/v1.13/reference/configuration/v1alpha1/config/
 
 ## Top-Level Structure
 
@@ -27,11 +27,11 @@ cluster:
 machine:
   install:
     disk: /dev/sda           # install target disk
-    image: ghcr.io/siderolabs/installer:v1.12.0
+    image: ghcr.io/siderolabs/installer:v1.13.2
     bootloader: true
     wipe: false
     extensions:
-      - image: ghcr.io/siderolabs/iscsi-tools:latest
+      - image: ghcr.io/siderolabs/iscsi-tools:<tag-for-v1.13.2>   # never :latest — match the Talos version
 ```
 
 ### Network
@@ -59,7 +59,7 @@ machine:
 ```yaml
 machine:
   kubelet:
-    image: ghcr.io/siderolabs/kubelet:v1.35.0
+    image: ghcr.io/siderolabs/kubelet:v1.36.0
     extraArgs:
       rotate-server-certificates: "true"
     extraMounts:
@@ -142,7 +142,7 @@ cluster:
 ```yaml
 cluster:
   apiServer:
-    image: registry.k8s.io/kube-apiserver:v1.35.0
+    image: registry.k8s.io/kube-apiserver:v1.36.0
     certSANs:
       - 10.0.0.100
     extraArgs:
@@ -220,3 +220,18 @@ Multi-document patches (separate with `---`) apply in order.
 - `network.interfaces` — merged by matching `interface:` or `deviceSelector:` key
 - `network.interfaces.vlans` — merged by matching `vlanId:`
 - `cluster.apiServer.auditPolicy` — replaced entirely
+- `machine.network.nameservers` (v1.13+) — overwrites all lower layers (defaults, platform); previously a smart merge kept IPv4/IPv6 entries from lower layers when the machine config specified only one type. If you set only IPv4 nameservers now, IPv6 entries from platform defaults will not be preserved
+
+## New v1.13 Configuration Documents
+
+Talos v1.13 introduces additional standalone configuration documents (applied alongside the v1alpha1 `Config` document in the same machine config YAML, separated by `---`). See the docs URL at the top for full schemas.
+
+- **`EnvironmentConfig`** — sets environment variables for Talos components. Replaces and deprecates `.machine.env`; the legacy field still works for backward compatibility. Duplicate variable names: last value wins. Remove a variable by removing it from the document and restarting the node.
+- **`ImageVerificationConfig`** — machine-wide container image signature verification. Images that get pulled on the node are verified against the configured rules; images that match no rule are pulled without verification.
+- **`ExternalVolumeConfig`** — virtiofs-based external volumes attached to the VM. **Not supported with SELinux in enforcing mode.**
+- **`KubeSpanConfig`** — see `references/networking.md` (replaces `.machine.network.kubespan`).
+- **`RoutingRuleConfig`**, **`VRFConfig`**, **`LinkAliasConfig`**, **`TCPProbeConfig`** — see `references/networking.md`.
+
+### Extra Arguments: slices accepted (v1.13)
+
+Several fields that previously took a single string for extra arguments now also accept a list (e.g., `cluster.apiServer.extraArgs`). **Breaking change for raw resource consumers**: the protobuf format for `EtcdConfigs`, `KubeletConfigs`, `ControllerManagerConfigs`, `SchedulerConfigs`, `APIServerConfigs` changed from `map<string,string>` to `map<string,message>`. Anything that reads those resources directly (rather than via `talosctl get`'s textual output) needs to be rebuilt against the v1.13 machinery SDK.

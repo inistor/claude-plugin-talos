@@ -1,22 +1,35 @@
 # Boot Assets & Imager Reference
 
-Docs: https://docs.siderolabs.com/talos/v1.12/talos-guides/install/boot-assets/
+Docs: https://docs.siderolabs.com/talos/v1.13/talos-guides/install/boot-assets/
 
 ## Local Imager
 
-The imager builds custom Talos images locally via Docker:
+The imager builds custom Talos images locally via Docker. As of v1.13 the imager runs rootless — `--privileged` and `-v /dev:/dev` are only needed for **bootable-media** profiles (`iso`, `metal`, `disk-image`, cloud targets) that need loop devices. The `installer` profile does not need them. Always bind-mount a host directory to `/out` (the in-container output path).
 
+Bootable media (iso/metal/disk-image/cloud):
 ```bash
-docker run --rm -t -v /dev:/dev --privileged \
-  ghcr.io/siderolabs/imager:v1.12.0 \
+mkdir -p _out
+docker run --rm -t --privileged \
+  -v /dev:/dev \
+  -v "$PWD/_out:/out" \
+  ghcr.io/siderolabs/imager:v1.13.2 \
   <output-type> [options]
+```
+
+Installer (Docker image tar):
+```bash
+mkdir -p _out
+docker run --rm -t \
+  -v "$PWD/_out:/out" \
+  ghcr.io/siderolabs/imager:v1.13.2 \
+  installer [options]
 ```
 
 ### Output Types
 - `iso` — bootable ISO image
 - `metal` — raw disk image for bare metal
 - `disk-image` — generic disk image
-- `installer` — installer container image
+- `installer` — installer container image (Docker tar)
 - `aws` — AMI-compatible image
 - `azure` — VHD for Azure
 - `gcp` — GCE image
@@ -30,49 +43,71 @@ docker run --rm -t -v /dev:/dev --privileged \
 
 ### Common Options
 ```
---system-extension-image <image>   Add a system extension
+--system-extension-image <image>   Add a system extension (use a versioned tag)
 --extra-kernel-arg <arg>           Add kernel command-line arg
 --overlay-image <image>            Apply an overlay (e.g., SBC support)
 --overlay-name <name>              Overlay name within the image
 --meta <key>=<value>               Set META partition value
 --base-installer-image <image>     Custom base installer
---output <path>                    Output directory (default: current dir)
 ```
+
+The imager writes its output to `/out` inside the container by default — bind a host path to `/out` rather than passing an `--output` flag.
+
+### Extension Tag Matching
+
+System extension images are tagged per Talos release. **Never use `:latest`** — there is no `:latest` tag and a copy-pasted invocation will fail to pull. Look up the matching tag for your Talos version at:
+- https://github.com/siderolabs/extensions/releases/tag/v1.13.2
+- or the image factory's schematic UI at https://factory.talos.dev/
+
+### Reproducible Images (v1.13)
+
+As of v1.13 disk images are reproducible — building the same Talos version multiple times yields byte-identical output. Verify via SHA. Note: VHD and VMDK (Azure, VMware) images are not currently reproducible due to limitations in the underlying image creation tools; use raw images for verification and convert afterward.
 
 ### Examples
 
 **ISO with extensions:**
 ```bash
-docker run --rm -t -v $(pwd)/_out:/out \
-  ghcr.io/siderolabs/imager:v1.12.0 iso \
-  --system-extension-image ghcr.io/siderolabs/iscsi-tools:v0.1.4 \
-  --system-extension-image ghcr.io/siderolabs/qemu-guest-agent:v8.2.2 \
-  --output /out
+docker run --rm -t --privileged \
+  -v /dev:/dev \
+  -v "$PWD/_out:/out" \
+  ghcr.io/siderolabs/imager:v1.13.2 iso \
+  --system-extension-image ghcr.io/siderolabs/iscsi-tools:<tag-for-v1.13.2> \
+  --system-extension-image ghcr.io/siderolabs/qemu-guest-agent:<tag-for-v1.13.2>
 ```
 
 **Metal image for Raspberry Pi:**
 ```bash
-docker run --rm -t -v $(pwd)/_out:/out --privileged \
-  ghcr.io/siderolabs/imager:v1.12.0 metal \
-  --overlay-image ghcr.io/siderolabs/sbc-raspberrypi:v0.1.0 \
-  --overlay-name rpi_generic \
-  --output /out
+docker run --rm -t --privileged \
+  -v /dev:/dev \
+  -v "$PWD/_out:/out" \
+  ghcr.io/siderolabs/imager:v1.13.2 metal \
+  --overlay-image ghcr.io/siderolabs/sbc-raspberrypi:<tag> \
+  --overlay-name rpi_generic
 ```
 
 **Installer with custom extensions:**
 ```bash
-docker run --rm -t -v $(pwd)/_out:/out \
-  ghcr.io/siderolabs/imager:v1.12.0 installer \
-  --system-extension-image ghcr.io/siderolabs/nvidia-container-toolkit:535.129.03-v1.14.3 \
-  --output /out
+docker run --rm -t \
+  -v "$PWD/_out:/out" \
+  ghcr.io/siderolabs/imager:v1.13.2 installer \
+  --system-extension-image ghcr.io/siderolabs/nvidia-container-toolkit:<tag-for-v1.13.2>
 ```
+
+After building the installer, load it into the local Docker daemon, tag it for your registry, and push so the cluster nodes can pull it:
+```bash
+docker load -i _out/installer-amd64.tar
+docker tag  ghcr.io/siderolabs/installer:v1.13.2 <registry>/<repo>:v1.13.2-custom
+docker push <registry>/<repo>:v1.13.2-custom
+```
+Then reference `<registry>/<repo>:v1.13.2-custom` in `mcp__talos__talos_upgrade` or in `.machine.install.image` at install time.
 
 **SecureBoot ISO:**
 ```bash
-docker run --rm -t -v $(pwd)/_out:/out \
-  ghcr.io/siderolabs/imager:v1.12.0 iso \
-  --overlay-name secureboot \
-  --output /out
+docker run --rm -t --privileged \
+  -v /dev:/dev \
+  -v "$PWD/_out:/out" \
+  ghcr.io/siderolabs/imager:v1.13.2 iso \
+  --overlay-name secureboot
 ```
 
 ## Common System Extensions
@@ -88,7 +123,7 @@ docker run --rm -t -v $(pwd)/_out:/out \
 ### Extra
 | Extension | Image | Purpose |
 |---|---|---|
-| nvidia-container-toolkit | `ghcr.io/siderolabs/nvidia-container-toolkit` | NVIDIA GPU |
+| nvidia-container-toolkit | `ghcr.io/siderolabs/nvidia-container-toolkit` | NVIDIA GPU (v1.13 uses CDI; see gpu-operator notes) |
 | tailscale | `ghcr.io/siderolabs/tailscale` | Tailscale VPN |
 | util-linux-tools | `ghcr.io/siderolabs/util-linux-tools` | Linux utilities |
 | drbd | `ghcr.io/siderolabs/drbd` | DRBD replication |
