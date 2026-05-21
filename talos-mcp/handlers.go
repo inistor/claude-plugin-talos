@@ -69,6 +69,32 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// statusAwareResult marshals payload to JSON and returns it as a tool result.
+// The result is flagged as an error (IsError=true) if payload["status"] is set
+// to anything other than "ok"/"" — or if any payload key ends in "_error"
+// (drain_failed, uncordon_error, wait_error, ...). Callers see the failure at
+// the protocol level, not just buried in the JSON body.
+func statusAwareResult(payload map[string]any) (*mcp.CallToolResult, error) {
+	isErr := false
+	if s, _ := payload["status"].(string); s != "ok" && s != "" {
+		isErr = true
+	}
+	for k := range payload {
+		if strings.HasSuffix(k, "_error") {
+			isErr = true
+			break
+		}
+	}
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("marshal error: %v", err)), nil
+	}
+	if isErr {
+		return mcp.NewToolResultError(string(b)), nil
+	}
+	return mcp.NewToolResultText(string(b)), nil
+}
+
 // parseApplyMode maps the user-facing mode string onto the protobuf enum.
 // An empty or unknown value yields AUTO, matching talosctl behaviour.
 func parseApplyMode(mode string) machine.ApplyConfigurationRequest_Mode {
@@ -554,7 +580,12 @@ func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args ma
 	stages := []string{}
 	addStage := func(msg string) { stages = append(stages, msg) }
 	payload := map[string]any{}
-	emit := func() { payload["stages"] = stages; finalRes, _ = jsonResult(payload) }
+	// emit serializes the payload via statusAwareResult so failures (any
+	// non-"ok" status, or any "_error" field) are flagged as IsError=true.
+	emit := func() {
+		payload["stages"] = stages
+		finalRes, _ = statusAwareResult(payload)
+	}
 
 	// Phase 0 — discover K8s. Tolerant of failures: upgrade still proceeds.
 	// k8s.Nodename is a per-node COSI resource (use nCtx); kubeconfig is
@@ -788,7 +819,7 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 	if exitCode != 0 {
 		out["status"] = "failed"
 		out["exit_code"] = exitCode
-		return jsonResult(out)
+		return statusAwareResult(out)
 	}
 	out["status"] = "ok"
 
@@ -800,11 +831,11 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 		if err := c.Reboot(nCtx, rebootModeOpts(rebootMode)...); err != nil {
 			out["status"] = "installed_no_reboot"
 			out["reboot_error"] = err.Error()
-			return jsonResult(out)
+			return statusAwareResult(out)
 		}
 		out["rebooted"] = true
 	}
-	return jsonResult(out)
+	return statusAwareResult(out)
 }
 
 // upgradeViaLegacyAPI is the pre-v1.13 path using MachineService.Upgrade.
@@ -834,7 +865,7 @@ func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (legacy API, server %s): %v", tag, err)), nil
 	}
-	return jsonResult(map[string]any{
+	return statusAwareResult(map[string]any{
 		"status":     "ok",
 		"api":        "legacy",
 		"server_tag": tag,
