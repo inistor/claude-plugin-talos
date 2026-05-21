@@ -532,7 +532,7 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		return upgradeViaLegacyAPI(nCtx, c, args, image, tag, false)
 	}
 
-	return drainUpgradeReboot(nCtx, c, args, image, tag, useLifecycle, rebootMode)
+	return drainUpgradeReboot(ctx, nCtx, c, args, image, tag, useLifecycle, rebootMode)
 }
 
 // drainUpgradeReboot is the full talosctl-equivalent upgrade flow for
@@ -540,17 +540,25 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 // -> reboot -> wait for the Talos node to come back -> wait for K8s Ready ->
 // uncordon. K8s steps are skipped gracefully if the target isn't a Kubernetes
 // node (e.g. fresh cluster, or non-K8s Talos use case).
-func drainUpgradeReboot(nCtx context.Context, c *client.Client, args map[string]any, image, tag string, useLifecycle bool, rebootMode string) (*mcp.CallToolResult, error) {
+//
+// baseCtx is the un-noded context (uses the talosconfig endpoints, i.e. CPs)
+// — needed for cluster-level RPCs like Kubeconfig that workers cannot serve.
+// nCtx is the node-targeted context for per-node operations (Reboot, Version,
+// COSI resource reads on the target).
+func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args map[string]any, image, tag string, useLifecycle bool, rebootMode string) (*mcp.CallToolResult, error) {
 	stages := []string{}
 	addStage := func(msg string) { stages = append(stages, msg) }
 
 	// Phase 0 — try to set up K8s drain/uncordon. Failures here are tolerated:
 	// the upgrade can proceed without K8s orchestration if the node isn't
-	// joined or the API isn't reachable.
+	// joined or the API isn't reachable. The k8s.Nodename COSI resource is
+	// per-node so we ask the target (nCtx); the kubeconfig is cluster-wide
+	// and only CPs can serve it, so we fetch it via the base context which
+	// routes through the talosconfig's CP endpoints.
 	nodeName, _ := getKubernetesNodeName(nCtx, c)
 	var clientset *kubernetes.Clientset
 	if nodeName != "" {
-		cs, csErr := newK8sClientset(nCtx, c)
+		cs, csErr := newK8sClientset(baseCtx, c)
 		if csErr != nil {
 			addStage(fmt.Sprintf("k8s skipped: %v", csErr))
 		} else {
