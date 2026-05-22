@@ -35,7 +35,7 @@ Use `yq` or `jq` for parsing YAML/JSON output. Avoid `grep` on structured data.
 
 ## Talosconfig
 
-The Talos client config lives at `~/.talos/config` (or `$TALOSCONFIG`). It contains contexts with endpoints and TLS credentials. Each MCP tool accepts an optional `node` parameter to target a specific node and `context` to select a talosconfig context.
+The Talos client config lives at `~/.talos/config` (or `$TALOSCONFIG`). It contains contexts with endpoints and TLS credentials. Each MCP tool accepts an optional `node` (singular string) to target one specific node and `context` to select a talosconfig context. **There is no `nodes` array** — each call targets exactly one node; to fan out across a cluster, loop over your nodes and issue one tool call per node. Omitting `node` lets the request execute on whichever endpoint apid picks from the talosconfig (typically a control plane); that's fine for cluster-wide reads like `talos_health` or `talos_etcd_members`, but means per-worker tools (`talos_addresses`, `talos_disks`, `talos_read`, `talos_ls`, etc.) will return the *endpoint's* data, not the worker's.
 
 **Before any Talos operation**, check if a local `talosconfig` file exists in the current working directory or project root. If found, base64-encode it via Bash (`base64 < talosconfig`) and call `talos_set_config(content)` with the base64 output. This preserves the exact file formatting (long base64 cert lines must not be wrapped). This is critical when working in project directories that have their own cluster configs.
 
@@ -54,7 +54,7 @@ Key components: `machined` (init), `apid` (API gateway), `trustd` (certificate a
 **Config**: `talos_set_config`, `talos_config_info`, `talos_machine_config`
 **Cluster**: `talos_bootstrap`, `talos_health`, `talos_version`, `talos_members`, `talos_kubeconfig`, `talos_get`
 **Node**: `talos_apply_config`, `talos_patch`, `talos_reboot`, `talos_shutdown`, `talos_reset`, `talos_upgrade`, `talos_rollback`, `talos_wipe`
-**Services**: `talos_services`, `talos_service_restart`, `talos_containers`, `talos_stats`, `talos_image_list`
+**Services**: `talos_services`, `talos_service_restart`, `talos_containers`, `talos_stats`, `talos_image_list`, `talos_image_remove`, `talos_image_prune`
 **Diagnostics**: `talos_logs`, `talos_dmesg`, `talos_processes`
 **System**: `talos_disks`, `talos_mounts`, `talos_memory`, `talos_cpu`, `talos_disk_usage`, `talos_time`
 **Network**: `talos_interfaces`, `talos_addresses`, `talos_routes`, `talos_netstat`, `talos_resolvers`, `talos_hostname`
@@ -164,6 +164,20 @@ Extension tags must match the Talos version — never use `:latest`. Look up mat
 Output types: `iso`, `metal`, `disk-image`, `installer`, `aws`, `azure`, `gcp`, etc.
 
 See `references/boot-assets.md` for extension list, overlay options, SecureBoot, and profiles.
+
+### On-node Image Cache
+
+Each node runs two containerd instances with separate image stores:
+
+- **`cri`** (the default) — kubelet's containerd, namespace `k8s.io`. Holds all Kubernetes workload images. Old images accumulate here because kubelet's GC is lazy (high/low disk watermarks). This is the common prune target.
+- **`system`** — Talos's own containerd. Holds the `installer` image used during upgrades and system-extension images. Smaller, rarely needs pruning. **Don't remove the installer image for the currently running version** — `talos_rollback` needs it.
+
+Tools (all single-node-per-call):
+- `talos_image_list(node, namespace?)` — list cached images with name, digest, size.
+- `talos_image_remove(node, image, namespace?)` — remove one image by ref. Equivalent to `talosctl image remove`.
+- `talos_image_prune(node, namespace?, dry_run=true)` — list all images not in use by any running container; remove them when `dry_run=false`. Plugin-level helper (no talosctl equivalent). Always preview with the default dry-run before re-running with `dry_run=false`.
+
+**Ref shapes in the image store**: containerd indexes each cached image under **three separate refs** — the tag (`docker.io/foo/bar:v1`), the digest (`docker.io/foo/bar@sha256:...`), and the raw content ID (`sha256:...`). All three point at the same on-disk blob, so removing only the tag with `talos_image_remove` does **not** reclaim bytes — the digest and content-ID refs still pin the blob. To actually free space for one image, remove all three forms. `talos_image_prune` already does this automatically because it iterates the full candidate list, which is why prune is the right tool for "reclaim disk space" and individual `remove` is the right tool for "force a re-pull of a specific tag".
 
 ## System Extensions
 

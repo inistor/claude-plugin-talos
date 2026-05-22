@@ -39,6 +39,27 @@ func extractParams(req mcp.CallToolRequest) (node, ctxName string, insecure bool
 
 // helper to create client and node context
 func setupClient(ctx context.Context, req mcp.CallToolRequest) (*client.Client, context.Context, error) {
+	// Guard against any list-of-IPs input. Silently dropping it lets the call
+	// run on whichever endpoint apid picks and return that node's data — the
+	// caller thinks they targeted a worker but is reading the control plane.
+	// Fail loudly instead so the misuse is obvious.
+	//
+	// Two shapes to catch:
+	//   1. talosctl-style "nodes" array (e.g. {"nodes": ["1.2.3.4"]}) — wrong
+	//      param name; extractParams would silently drop it.
+	//   2. "node" given as a list (e.g. {"node": ["1.2.3.4", "5.6.7.8"]}) —
+	//      right name, wrong type; extractParams' string assertion would
+	//      coerce it to "" and target nothing.
+	args := req.GetArguments()
+	if _, ok := args["nodes"]; ok {
+		return nil, nil, fmt.Errorf(`unknown parameter "nodes": this tool targets exactly one node per call — pass "node" (singular string). To fan out across multiple nodes, issue one tool call per node`)
+	}
+	if v, ok := args["node"]; ok {
+		if _, isString := v.(string); !isString {
+			return nil, nil, fmt.Errorf(`parameter "node" must be a single string (got %T): this tool targets exactly one node per call. To fan out across multiple nodes, issue one tool call per node`, v)
+		}
+	}
+
 	node, ctxName, insecure := extractParams(req)
 
 	var (
@@ -1454,6 +1475,198 @@ func handleImageList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		})
 	}
 	return jsonResult(images)
+}
+
+// resolveImageNamespace maps the user-facing "cri"/"system" string onto a
+// fully-populated ContainerdInstance, plus the matching ContainerDriver for
+// the Containers RPC and the canonical namespace string. Defaults to CRI
+// (Kubernetes workloads) to match talosctl image's default.
+//
+// The newer ImageService rejects {Driver: CONTAINERD, Namespace: NS_CRI} with
+// "cannot use CRI namespace with containerd driver" — the driver and
+// namespace must agree. CRI namespace → CRI driver; system namespace →
+// containerd driver.
+func resolveImageNamespace(s string) (*common.ContainerdInstance, common.ContainerDriver, string) {
+	if s == "system" {
+		return &common.ContainerdInstance{
+			Driver:    common.ContainerDriver_CONTAINERD,
+			Namespace: common.ContainerdNamespace_NS_SYSTEM,
+		}, common.ContainerDriver_CONTAINERD, "system"
+	}
+	return &common.ContainerdInstance{
+		Driver:    common.ContainerDriver_CRI,
+		Namespace: common.ContainerdNamespace_NS_CRI,
+	}, common.ContainerDriver_CRI, "cri"
+}
+
+func handleImageRemove(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	imageRef, _ := args["image"].(string)
+	if imageRef == "" {
+		return mcp.NewToolResultError("image is required"), nil
+	}
+
+	nsArg, _ := args["namespace"].(string)
+	cd, _, nsStr := resolveImageNamespace(nsArg)
+
+	if _, err := c.ImageClient.Remove(nCtx, &machine.ImageServiceRemoveRequest{
+		Containerd: cd,
+		ImageRef:   imageRef,
+	}); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("image remove failed: %v", err)), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Removed image %q from namespace %s", imageRef, nsStr)), nil
+}
+
+// handleImagePrune is a plugin-level helper since talosctl has no prune
+// subcommand. It lists images in the requested containerd namespace, lists
+// running containers in the same namespace, and removes every image that
+// isn't referenced by any container. Defaults to dry_run=true because the
+// operation is destructive — callers should preview, then re-run with
+// dry_run=false. The in-use match accepts exact name, exact digest, or
+// substring (a container's image ref often includes "name@digest").
+func handleImagePrune(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	c, nCtx, err := setupClient(ctx, req)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer c.Close()
+
+	args := req.GetArguments()
+	dryRun := true
+	if v, ok := args["dry_run"].(bool); ok {
+		dryRun = v
+	}
+	nsArg, _ := args["namespace"].(string)
+	cd, driver, nsStr := resolveImageNamespace(nsArg)
+
+	// 1. List images in the namespace.
+	stream, err := c.ImageClient.List(nCtx, &machine.ImageServiceListRequest{
+		Containerd: cd,
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("image list failed: %v", err)), nil
+	}
+
+	type imgInfo struct {
+		Name   string
+		Digest string
+		Size   int64
+	}
+	var images []imgInfo
+	for {
+		img, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return mcp.NewToolResultError(fmt.Sprintf("image list stream failed: %v", err)), nil
+		}
+		images = append(images, imgInfo{Name: img.GetName(), Digest: img.GetDigest(), Size: img.GetSize()})
+	}
+
+	// 2. Collect image refs that some running container is using. The
+	// Containers RPC wants the actual containerd-namespace name ("k8s.io" for
+	// the CRI inspector, "system" for the system instance) — *not* the short
+	// "cri"/"system" alias used above for the ImageService call.
+	containersNs := nsStr
+	if nsStr == "cri" {
+		containersNs = "k8s.io"
+	}
+	inUse := map[string]struct{}{}
+	cResp, err := c.Containers(nCtx, containersNs, driver)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("containers failed: %v", err)), nil
+	}
+	for _, msg := range cResp.GetMessages() {
+		for _, ct := range msg.GetContainers() {
+			if ref := ct.GetImage(); ref != "" {
+				inUse[ref] = struct{}{}
+			}
+		}
+	}
+
+	// Substring match handles refs that embed "@sha256:..." alongside the name.
+	imageInUse := func(name, digest string) bool {
+		for ref := range inUse {
+			if ref == name || ref == digest {
+				return true
+			}
+			if name != "" && strings.Contains(ref, name) {
+				return true
+			}
+			if digest != "" && strings.Contains(ref, digest) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 3. Compute prune candidates.
+	candidates := []map[string]any{}
+	var totalBytes int64
+	for _, img := range images {
+		if imageInUse(img.Name, img.Digest) {
+			continue
+		}
+		candidates = append(candidates, map[string]any{
+			"name":   img.Name,
+			"digest": img.Digest,
+			"size":   img.Size,
+		})
+		totalBytes += img.Size
+	}
+
+	payload := map[string]any{
+		"namespace":       nsStr,
+		"dry_run":         dryRun,
+		"total_images":    len(images),
+		"in_use_images":   len(images) - len(candidates),
+		"candidate_count": len(candidates),
+		"candidate_bytes": totalBytes,
+		"candidates":      candidates,
+	}
+
+	if dryRun {
+		payload["status"] = "ok"
+		payload["note"] = "dry_run=true: no images were removed. Re-run with dry_run=false to actually prune."
+		return statusAwareResult(payload)
+	}
+
+	// 4. Remove each candidate; collect successes and failures separately so a
+	// partial failure doesn't mask the rest of the work.
+	removed := []map[string]any{}
+	failed := []map[string]any{}
+	for _, cand := range candidates {
+		ref, _ := cand["name"].(string)
+		if ref == "" {
+			ref, _ = cand["digest"].(string)
+		}
+		if _, err := c.ImageClient.Remove(nCtx, &machine.ImageServiceRemoveRequest{
+			Containerd: cd,
+			ImageRef:   ref,
+		}); err != nil {
+			failed = append(failed, map[string]any{"image": ref, "error": err.Error()})
+			continue
+		}
+		removed = append(removed, cand)
+	}
+	payload["removed"] = removed
+	payload["removed_count"] = len(removed)
+	if len(failed) > 0 {
+		payload["failed"] = failed
+		payload["failed_count"] = len(failed)
+		payload["status"] = "partial"
+	} else {
+		payload["status"] = "ok"
+	}
+	return statusAwareResult(payload)
 }
 
 func handleStats(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
