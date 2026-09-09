@@ -42,50 +42,27 @@ behaviour.
 6. Configure networking, storage, and security
 
 **Tool Usage Rules:**
-- Use Talos MCP tools (`mcp__talos__*` when installed via user config, `mcp__plugin_talos_talos__*` when installed as a plugin) for Talos operations.
-- Use Kubernetes MCP tools (`mcp__kubernetes-mcp-server__*`) for Kubernetes operations — including deleting node objects (`resources_delete`) and reading events (`events_list`, scoped to a namespace).
-- Use `yq` or `jq` via Bash for parsing YAML/JSON. Avoid `grep` on structured data.
+- Use Talos MCP tools (`mcp__talos__*`, or `mcp__plugin_talos_talos__*` when installed as a plugin) for Talos operations, and Kubernetes MCP tools (`mcp__kubernetes-mcp-server__*`) for Kubernetes operations — including deleting node objects (`resources_delete`) and reading events (`events_list`, scoped to a namespace).
 - The tool schemas are authoritative for what exists and what each parameter takes. Read them instead of assuming a tool is missing.
-
-**Shell out only for these** — they have no MCP equivalent, and using them is correct, not a fallback:
-
-| Operation | Command |
-|---|---|
-| Config generation | `talosctl gen secrets`, `talosctl gen config` |
-| Kubernetes upgrade | `talosctl upgrade-k8s --to <version>` |
-| Support bundle | `talosctl support` |
-| CA rotation | `talosctl rotate-ca` |
-| etcd restore | `talosctl bootstrap --recover-from` |
-| Offline config validation | `talosctl validate` |
-
-For anything else, if you find yourself reaching for `talosctl` or `kubectl`, check the tool list
-first — an equivalent almost certainly exists.
+- Use `yq` or `jq` via Bash for parsing YAML/JSON. Avoid `grep` on structured data.
+- The skill's SKILL.md carries the authoritative list of operations that legitimately shell out to `talosctl` (config generation, `upgrade-k8s`, `support`, `rotate-ca`, `bootstrap --recover-from`, `validate`). Consult it rather than keeping a second copy here. For anything else, check the tool list before reaching for a CLI.
 
 **Upgrade Procedure:**
-1. Check the current version on all nodes (`talos_version`) and cluster health (`talos_health`)
-2. Create an etcd snapshot (`talos_etcd_snapshot`) as a backup
-3. Record installed extensions (`talos_extensions`) so you can build a matching installer
-4. Upgrade control plane nodes one at a time (`talos_upgrade`), verifying health and etcd membership between each
-5. Upgrade workers, in parallel only if the workloads tolerate simultaneous reboots
-6. Verify health, versions and extensions afterwards, then confirm workloads are running via the Kubernetes MCP
+Follow `references/operations/upgrade-talos.md` in the skill — it carries the ordered procedure, the
+response shape, and a failure-status table with per-status remediation. In outline: check versions
+and health, snapshot etcd, record installed extensions, upgrade control-plane nodes one at a time
+verifying between each, then workers, then verify health, versions and extensions.
 
 `talos_upgrade` handles cordon → drain → install → reboot → wait → uncordon itself. Do not
-reimplement those steps. If it returns a non-`ok` status, read `stages` and the `*_error` fields
-before retrying — see `references/upgrade.md`.
-
-For v1.14 specifically: `ghcr.io/siderolabs/installer` no longer exists, so the image must come from
-the Image Factory (`factory.talos.dev/metal-installer/<schematic-id>:v1.14.0`).
+reimplement those steps. On a non-`ok` status, read `stages` and the `*_error` fields before
+retrying.
 
 **Troubleshooting Process:**
-1. `talos_get(resource_type="diagnostics")` — Talos's own warnings, the cheapest first look
-2. `talos_health` — overall cluster health
-3. `talos_services` — service states
-4. `talos_logs` and `talos_dmesg`, always with a `filter`
-5. `talos_etcd_members`, `talos_etcd_status`, `talos_etcd_alarm`
-6. Kubernetes state via the Kubernetes MCP (pods, events, nodes)
-7. `talos_memory`, `talos_cpu`, `talos_disk_usage` — resource pressure
-8. `talos_netstat`, `talos_interfaces`, `talos_addresses` — network state
-9. `talos_discovered_volumes` and `talos_get(resource_type="mountstatus")` for storage — these supersede the older `talos_disks` / `talos_mounts` wrappers
+Start with `talos_get(resource_type="diagnostics")` — Talos's own known-problem warnings, and the
+cheapest first look. Then `talos_health`, then narrow by subsystem. The full ordered checklist and
+the symptom-to-cause tables are in `references/troubleshooting.md`; use it rather than working from
+memory, and prefer `talos_discovered_volumes` / `talos_get(resource_type="mountstatus")` over the
+older `talos_disks` and `talos_mounts` wrappers.
 
 **Node Operations:**
 - Always confirm destructive operations (reset, shutdown, wipe) with the user before executing

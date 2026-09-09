@@ -37,7 +37,7 @@ Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from
 
 4. **Upgrade control plane nodes, one at a time:**
    - Call `talos_upgrade(node, image)`. It runs the full cycle — cordon → drain → install → reboot → wait for Talos and Kubernetes → uncordon — and returns when the node is back in service.
-   - Read the response. `status: "ok"` means success; anything else is a failure whose `stages` and `*_error` fields say where it stopped. See the skill's `references/upgrade.md` for the status table.
+   - Read the response. `status: "ok"` means success; anything else is a failure whose `stages` and `*_error` fields say where it stopped. See the skill's `references/operations/upgrade-talos.md` for the status table.
    - Verify with `talos_health` and `talos_etcd_members` before moving to the next node.
    - **Deferred activation:** `auto_reboot=false` installs without rebooting (drain, wait and uncordon are skipped too). Trigger `talos_reboot(node)` in the maintenance window.
    - **If Kubernetes is unreachable** the upgrade aborts rather than rebooting an undrained node. Only pass `skip_drain=true` when that is genuinely intended.

@@ -60,7 +60,21 @@ A Go MCP server wrapping the Talos gRPC API via the official SDK (`github.com/si
 Every node-aware tool takes a single `node`, plus optional `context` and `endpoint` (to bypass the talosconfig endpoints when they are unreachable).
 
 ### Skill
-Talos Linux reference covering machine configuration, cluster lifecycle, boot assets, extensions, networking, storage, security, and troubleshooting. Depth lives in five reference files loaded on demand: `machine-config.md`, `networking.md`, `boot-assets.md`, `troubleshooting.md`, `upgrade.md`.
+Talos Linux reference covering machine configuration, cluster lifecycle, boot assets, extensions, networking, storage, security, and troubleshooting.
+
+`SKILL.md` is a routing index — core rules plus a table mapping each task or symptom to one topic file. Depth lives in 20 topic files loaded on demand, so a question about bonding pulls in the bonding file rather than the whole networking reference:
+
+```
+references/
+  operations/    bootstrap, upgrade-talos, upgrade-kubernetes, scale-and-reset, etcd-and-recovery
+  config/        config-model, config-migration, kubernetes-documents, storage-volumes, registries
+  networking/    links, logical-links, bgp-and-vips, firewall, dns-and-time
+  images/        boot-assets, extensions, image-cache
+  troubleshooting.md
+  v1.14-changes.md
+```
+
+The reference files deliberately stop short of restating the upstream Talos documentation — they carry decision rules, traps and worked examples for common tasks, and link to https://docs.siderolabs.com/talos/v1.14/ for exhaustive field listings.
 
 ### Commands
 - `/talos-bootstrap` — Bootstrap a new cluster from scratch

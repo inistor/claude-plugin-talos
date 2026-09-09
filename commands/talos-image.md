@@ -82,4 +82,4 @@ Build a custom Talos Linux image using the local imager container.
 - Always confirm the command with the user before running
 - Docker must be available locally, and the imager pulls extension images over the network
 - An image built for one Talos version should not be reused across a minor upgrade — rebuild it
-- See the skill's `references/boot-assets.md` for the full profile list, output formats, SBC overlays, and the extension tables
+- See the skill's `references/images/boot-assets.md` for profiles and output formats, and `references/images/extensions.md` for the extension tag-lookup procedure

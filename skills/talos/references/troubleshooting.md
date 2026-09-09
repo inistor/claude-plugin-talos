@@ -8,9 +8,8 @@ Docs:
 - `talosctl debug` — https://docs.siderolabs.com/talos/v1.14/troubleshooting/talosctl-debug
 - FAQs — https://docs.siderolabs.com/talos/v1.14/troubleshooting/faqs
 
-Use the MCP tools first. Shell out to `talosctl` only for the operations the MCP genuinely lacks
-(`talosctl gen`, `talosctl upgrade-k8s`, `talosctl support`, `talosctl rotate-ca`, `talosctl debug`,
-`talosctl bootstrap --recover-from`).
+Use the MCP tools first; SKILL.md lists the few operations that legitimately shell out to
+`talosctl`. `talosctl debug` and `talosctl support` are the two that matter here.
 
 ## Diagnostic Commands (MCP tools)
 
@@ -134,67 +133,21 @@ Leaf certificates auto-rotate. CAs must be rotated deliberately with `talosctl r
 This supersedes `LoadedKernelModules`, which is deprecated in 1.14 and should not be used in new
 diagnostics.
 
-## Talos 1.14 Gotchas
+## Talos 1.14 gotchas — symptom first
 
-### Workload isolation (`sandboxd`) breaks the in-tree iSCSI volume plugin
-In 1.14 the container runtime plane — CRI containerd, the kubelet, and all pods — runs inside a dedicated
-PID and mount namespace anchored by a new `sandboxd` service. It is controlled by `workloadIsolation` in
-the new `SecurityProfileConfig` document: **on by default for new 1.14 clusters** (`talosctl gen config`
-emits it), **off for clusters upgraded from older releases** until the document is added.
+Mechanism and remedies for all three are in `references/v1.14-changes.md`; this section is the
+symptom-to-cause mapping.
 
-```yaml
-apiVersion: v1alpha1
-kind: SecurityProfileConfig
-workloadIsolation: true
-```
+| Symptom | Cause |
+|---|---|
+| iSCSI volumes that mounted before an upgrade now fail to attach; kubelet cannot find `iscsid` | Workload isolation (`sandboxd`) puts kubelet in its own PID namespace, so the in-tree `iscsi` volume plugin cannot reach host `iscsid`. Migrate to a CSI driver. |
+| A burst of pod restarts with **no** reboot in `talos_dmesg` | `sandboxd` died; the kernel tore down the namespace and Talos recreated it, relaunching CRI, kubelet and pods without rebooting. Check `talos_logs(service="sandboxd")`. |
+| Prometheus etcd targets go down after upgrading, but the cluster is healthy | etcd HTTP endpoints moved to port 2383; 2379 is gRPC-only. gRPC clients and `talos_health` are unaffected, which is why only monitoring notices. |
+| `multipathd` stuck in `Waiting`/`Preparing` in `talos_services`, multipath devices never appear | The extension now reads `/etc/multipath.conf` from the host and ships no default, so it waits forever. Needs an `EtcFileConfig` — apply it **before** upgrading. |
 
-Consequence: the deprecated in-tree Kubernetes `iscsi` volume plugin cannot work — the kubelet's
-`iscsiadm` wrapper cannot reach the host `iscsid` across the sandbox PID namespace. Symptom is iSCSI
-volumes that mounted fine before and now fail to attach, with the kubelet unable to find `iscsid`.
-Fix: move to a CSI driver (`kubernetes-csi/csi-driver-iscsi` or `democratic-csi`), which does the
-attach/mount in its own privileged pod. All in-tree (non-CSI) volume plugins are deprecated.
-
-New log source: `talos_logs(service="sandboxd")`. If `sandboxd` dies the kernel tears down the namespace
-and Talos recreates it — relaunching CRI, kubelet and pods — without rebooting the node, so a burst of
-pod restarts with no reboot in `talos_dmesg` points here.
-
-### etcd metrics and health moved from 2379 to 2383
-etcd now serves HTTP-only endpoints (`/metrics`, `/health`, the gRPC-gateway JSON API) on a dedicated
-port **2383**; **2379** is gRPC-only. Same client mTLS as before.
-
-Symptom: Prometheus etcd scrapes silently stop working after upgrading to 1.14 (targets down / no etcd
-metrics), while the cluster itself is fine — etcd gRPC clients and the Talos health check are unaffected.
-
-Fix: point the scrape config / ServiceMonitor at 2383 and adjust firewall rules (if 2379 was blocked
-from monitoring, 2383 now needs the same treatment).
-
-### `multipath-tools` needs a config migration before upgrading
-The `multipath-tools` extension no longer takes its configuration from `ExtensionServiceConfig`. It reads
-`/etc/multipath.conf` from the host and bind-mounts it read-only into the service container, **and it
-ships no default config** — so `multipathd` waits forever if the file is absent.
-
-Apply this patch **before** updating the extension (delete the old document, add an `EtcFileConfig`):
-
-```yaml
-apiVersion: v1alpha1
-kind: ExtensionServiceConfig
-name: multipathd
-$patch: delete
----
-apiVersion: v1alpha1
-kind: EtcFileConfig
-name: multipath.conf
-mode: 0o644
-contents: |
-  defaults {
-      user_friendly_names yes
-      find_multipaths no
-      path_selector "round-robin 0"
-  }
-```
-
-Apply with `talos_patch` / `talos_apply_config`. Symptom if skipped: `multipathd` stuck in
-`Waiting`/`Preparing` in `talos_services`, and multipath devices never appear.
+Workload isolation is **on for new 1.14 clusters and off for upgraded ones**, so a cluster can be on
+1.14 and still show pre-1.14 behaviour. Confirm with
+`talos_get(resource_type="securityprofileconfig")` rather than inferring it from the Talos version.
 
 ## Support Bundle
 
@@ -209,7 +162,7 @@ It collects, per node: kernel logs, all Talos service logs, kube-system pod logs
 version; plus cluster-level Kubernetes node and kube-system pod manifests.
 
 **1.14 change: the bundle is age-encrypted by default**, to a default recipient set of `siderolabs`
-GitHub organization members — meaning you cannot read your own bundle unless you say so:
+GitHub organization members — meaning the bundle is unreadable locally unless recipients are set explicitly:
 
 ```bash
 # readable locally, old behaviour
@@ -218,7 +171,7 @@ talosctl -n <node> support --no-encryption -O support.zip
 # keep Sidero Labs recipients and add your own key
 talosctl -n <node> support --encryption-recipients age1... -O support.zip.age
 
-# encrypt only to your keys
+# encrypt only to local keys
 talosctl -n <node> support --encryption-recipients age1... --encryption-no-default-recipients
 ```
 
