@@ -14,6 +14,31 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # .mcp.json pins the image tag users actually run. It has drifted behind
+      # plugin.json before, shipping a plugin whose newest tools did not exist
+      # in the pinned image, so fail the build rather than publish that again.
+      - name: Check .mcp.json image tag matches plugin version
+        run: |
+          plugin_version=$(jq -r '.version' .claude-plugin/plugin.json)
+          mcp_tag=$(jq -r '.mcpServers.talos.args[-1]' .mcp.json | sed 's/.*talos-mcp://')
+          echo "plugin.json version: $plugin_version"
+          echo ".mcp.json image tag: $mcp_tag"
+          if [ "$plugin_version" != "$mcp_tag" ]; then
+            echo "::error::.mcp.json pins talos-mcp:$mcp_tag but plugin.json says $plugin_version — bump .mcp.json"
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: talos-mcp/go.mod
+
+      - name: Build, vet and test the MCP server
+        run: |
+          cd talos-mcp
+          go build ./...
+          go vet ./...
+          go test ./...
+
       - uses: docker/setup-qemu-action@v4
 
       - uses: docker/setup-buildx-action@v4
@@ -40,5 +65,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
