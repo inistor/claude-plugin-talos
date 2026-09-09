@@ -194,3 +194,68 @@ func TestCollectStreamPropagatesError(t *testing.T) {
 		t.Error("collectStream swallowed a stream error")
 	}
 }
+
+// Results must carry structured content as well as the JSON text fallback:
+// the spec prefers structuredContent, but keeping the serialized JSON in a
+// text block is what older clients read.
+func TestResultsCarryStructuredContent(t *testing.T) {
+	res, err := jsonResult(map[string]any{"hostname": "cp-1"})
+	if err != nil {
+		t.Fatalf("jsonResult errored: %v", err)
+	}
+	if res.StructuredContent == nil {
+		t.Error("jsonResult returned no structured content")
+	}
+	if resultText(res) == "" {
+		t.Error("jsonResult dropped the text fallback")
+	}
+
+	ok := statusAwareResult(map[string]any{"status": "ok", "api": "lifecycle"})
+	if ok.StructuredContent == nil {
+		t.Error("statusAwareResult success path returned no structured content")
+	}
+	if ok.IsError {
+		t.Error("statusAwareResult flagged a success as an error")
+	}
+
+	// Failure results stay text-only; NewToolResultError carries IsError and
+	// output-schema validation is skipped when there is no structured content.
+	bad := statusAwareResult(map[string]any{"status": "install_failed"})
+	if !bad.IsError {
+		t.Error("statusAwareResult did not flag a failure")
+	}
+}
+
+// The upgrade output schema must allow every status handlers.go can emit on the
+// structured (success) path, or a real upgrade would fail output validation.
+func TestUpgradeOutputSchemaCoversEmittedStatuses(t *testing.T) {
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties struct {
+			Status struct {
+				Enum []string `json:"enum"`
+			} `json:"status"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(upgradeOutputSchema), &schema); err != nil {
+		t.Fatalf("upgradeOutputSchema is not valid JSON: %v", err)
+	}
+
+	allowed := map[string]bool{}
+	for _, s := range schema.Properties.Status.Enum {
+		allowed[s] = true
+	}
+
+	// Every status set on a talos_upgrade payload in handlers.go.
+	for _, status := range []string{
+		"ok", "failed", "install_failed", "installed_no_reboot", "rebooted_no_wait",
+		"cordon_failed", "drain_failed", "k8s_discovery_failed", "internal_error",
+	} {
+		if !allowed[status] {
+			t.Errorf("status %q is emitted by handlers but missing from the output schema enum", status)
+		}
+	}
+	if len(schema.Required) != 1 || schema.Required[0] != "status" {
+		t.Errorf("required = %v, want exactly [status]", schema.Required)
+	}
+}

@@ -17,7 +17,7 @@ Bootstrap a new Talos Linux cluster. Follow these steps:
 
    Config generation is **client-side only** — it creates the cluster PKI, encryption keys, and bootstrap secrets, so there is no server-side MCP equivalent (analogous to how `talosctl upgrade-k8s` stays on the client in `/talos-upgrade`). Apply patches with `--config-patch @patch.yaml`, `--config-patch-control-plane`, or `--config-patch-worker`. After generation, the user can also edit the YAML files directly.
 
-3. **Load talosconfig into the MCP session** — Run `base64 < talosconfig` via Bash and pass the output to `talos_set_config`. All subsequent MCP calls will use this config.
+3. **Point the MCP server at the new talosconfig** — the server reads `TALOSCONFIG` (or `~/.talos/config`) at startup and cannot be repointed mid-session. Either copy the generated `talosconfig` to `~/.talos/config`, or set `TALOSCONFIG` in the server's launch configuration and restart it. Confirm with `talos_config_info` before continuing.
 
 4. **Apply configs** — For each node (which is in maintenance mode):
    - Read the appropriate file (`controlplane.yaml` or `worker.yaml`) and call `talos_apply_config` with the YAML content, the node IP, and `insecure: true` (maintenance mode has no TLS auth yet).

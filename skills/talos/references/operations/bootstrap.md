@@ -20,7 +20,7 @@ cluster-signed certificate and an insecure call is both wrong and less safe.
 
 1. `talosctl gen secrets -o secrets.yaml` (Bash). Store this file safely — it cannot be regenerated, and losing it means losing the ability to recover the cluster.
 2. `talosctl gen config <cluster-name> https://<endpoint>:6443 --with-secrets secrets.yaml` (Bash), producing `controlplane.yaml`, `worker.yaml` and `talosconfig`.
-3. Load the talosconfig: base64-encode it and pass the result to `talos_set_config`.
+3. Point the MCP server at the generated talosconfig: set `TALOSCONFIG` to its path in the server's launch configuration and restart it, or copy the file to `~/.talos/config`. The server reads its config at startup and has no tool to change it mid-session.
 4. Confirm each target is reachable and in maintenance mode: `talos_version(node=..., insecure=true)`, and `talos_disks(node=..., insecure=true)` to pick the install disk.
 5. Apply the control-plane config to every control-plane node: `talos_apply_config(config, node=..., insecure=true)`. Each node installs to disk and reboots into the configured system.
 6. Apply the worker config to every worker the same way.

@@ -6,7 +6,12 @@
     "name": "Ion Nistor"
   },
   "license": "MIT",
-  "keywords": ["talos", "kubernetes", "infrastructure", "cluster-management"],
+  "keywords": [
+    "talos",
+    "kubernetes",
+    "infrastructure",
+    "cluster-management"
+  ],
   "metadata": {
     "talosVersion": "1.14.0",
     "talosDocsBase": "https://docs.siderolabs.com/talos/v1.14",

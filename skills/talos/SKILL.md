@@ -105,16 +105,21 @@ rather than the intended node's.
 configured control-plane endpoints are down — the recovery case, and exactly when the talosconfig is
 least useful.
 
-**Before any Talos operation**, check for a local `talosconfig` in the working directory or project
-root. If one exists, base64-encode it (`base64 < talosconfig`) and pass the result to
-`talos_set_config`. Encoding preserves formatting; long base64 certificate lines must not wrap.
+**Which talosconfig is used is fixed when the server starts** — from `TALOSCONFIG` if set, otherwise
+`~/.talos/config`. The server holds no per-session state and there is no tool to change the config
+mid-session. Select a context within the configured file per call with `context`.
+
+To target a cluster whose talosconfig is a different file, point `TALOSCONFIG` at it in the server's
+launch configuration, or add a second MCP server entry — the same pattern the Kubernetes MCP servers
+use with `KUBECONFIG`. Note the server usually runs in a container that mounts only `~/.talos`, so a
+talosconfig outside that directory is not visible to it.
+
+Inspect what the server is actually using with `talos_config_info`, which reports the resolved path,
+the current context, and each context's endpoints and certificate expiry.
 
 **`x509: certificate signed by unknown authority` or `Ed25519 verification failure` does not mean
 the certificates are incompatible.** It means the talosconfig does not match the cluster — wrong
-config, stale config from a rebuilt cluster, or `talos_set_config` was never called.
-
-**One cluster per session.** `talos_set_config` sets the config for all subsequent calls. Switch
-clusters by calling it again; switch contexts within one talosconfig via the `context` parameter.
+file in `TALOSCONFIG`, a stale config from a rebuilt cluster, or the wrong `context` selected.
 
 ## Talos overview
 

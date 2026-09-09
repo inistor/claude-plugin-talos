@@ -21,7 +21,9 @@ Targets **Talos Linux v1.14**. Differences against v1.13 are called out inline i
 /plugin install talos@inistor-plugins
 ```
 
-The MCP server runs as a Docker container (`ionnistor/talos-mcp`) — no separate install needed. It mounts `~/.talos/config` read-only. For project-specific talosconfig files, Claude reads the file and passes its content to `talos_set_config`.
+The MCP server runs as a Docker container (`ionnistor/talos-mcp`) — no separate install needed. It mounts `~/.talos` read-only and reads `TALOSCONFIG` (default `~/.talos/config`) at startup.
+
+The server is stateless: the talosconfig is fixed at launch and selected per call only by `context`, the same way the Kubernetes MCP servers work with `KUBECONFIG`. To use a different file, set `TALOSCONFIG` in the launch command and mount the directory it lives in, or add a second server entry.
 
 To use `talos_etcd_snapshot`, also mount a writable directory at `/out`; the handler refuses to write anywhere that would be discarded when the container exits:
 
@@ -43,9 +45,9 @@ Then override `.mcp.json` in your settings: `{"mcpServers": {"talos": {"command"
 ### MCP Server (Go)
 A Go MCP server wrapping the Talos gRPC API via the official SDK (`github.com/siderolabs/talos/pkg/machinery/client`), built against machinery v1.14.0. Distributed as a Docker image (`ionnistor/talos-mcp`). Pure API — no talosctl dependency.
 
-52 tools, all annotated read-only or destructive so a host can gate them:
+51 tools, all annotated read-only or destructive so a host can gate them, all carrying human-readable titles, and all returning structured content alongside the JSON text:
 
-- **Config**: `talos_set_config`, `talos_config_info`, `talos_machine_config`
+- **Config**: `talos_config_info`, `talos_machine_config`
 - **Cluster**: `talos_bootstrap`, `talos_health`, `talos_version`, `talos_members`, `talos_kubeconfig`, `talos_get`
 - **Node**: `talos_apply_config`, `talos_patch`, `talos_reboot`, `talos_shutdown`, `talos_reset`, `talos_upgrade`, `talos_rollback`, `talos_wipe`
 - **Services & images**: `talos_services`, `talos_service_restart`, `talos_containers`, `talos_stats`, `talos_image_list`, `talos_image_remove`, `talos_image_prune`

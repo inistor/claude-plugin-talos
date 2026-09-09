@@ -92,12 +92,15 @@ func setupClient(ctx context.Context, req mcp.CallToolRequest) (*client.Client, 
 }
 
 // jsonResult marshals v to JSON and returns as tool result text.
+// jsonResult returns a value as both structured content and pretty-printed
+// JSON text. The spec prefers structuredContent, but recommends keeping the
+// serialized JSON in a text block so clients that predate it still work.
 func jsonResult(v any) (*mcp.CallToolResult, error) {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("marshal error: %v", err)), nil
 	}
-	return mcp.NewToolResultText(string(b)), nil
+	return mcp.NewToolResultStructured(v, string(b)), nil
 }
 
 // statusAwareResult marshals payload to JSON and returns it as a tool result.
@@ -127,7 +130,7 @@ func statusAwareResult(payload map[string]any) *mcp.CallToolResult {
 	if isErr {
 		return mcp.NewToolResultError(string(b))
 	}
-	return mcp.NewToolResultText(string(b))
+	return mcp.NewToolResultStructured(payload, string(b))
 }
 
 // resultText concatenates the plain-text content of a tool result. Used to
@@ -217,31 +220,8 @@ func collectStream(stream byteStream, filter string) (string, error) {
 
 // --- Configuration management ---
 
-func handleSetConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := req.GetArguments()
-	content, _ := args["content"].(string)
-
-	// Try base64 decode first — if it succeeds, use the decoded content
-	if decoded, err := base64.StdEncoding.DecodeString(content); err == nil {
-		content = string(decoded)
-	}
-
-	path, err := setConfigFromContent(content)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to set config: %v", err)), nil
-	}
-	return mcp.NewToolResultText(fmt.Sprintf("Talosconfig set (written to %s)", path)), nil
-}
-
 func handleConfigInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	cfgPath := getConfigPath()
-	if cfgPath == "" {
-		cfgPath = os.Getenv("TALOSCONFIG")
-	}
-	if cfgPath == "" {
-		home, _ := os.UserHomeDir()
-		cfgPath = home + "/.talos/config"
-	}
+	cfgPath := configPath()
 
 	cfg, err := clientconfig.Open(cfgPath)
 	if err != nil {
