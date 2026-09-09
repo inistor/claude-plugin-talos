@@ -7,50 +7,75 @@ argument-hint: "[talos-version|k8s-version]"
 
 Upgrade Talos Linux or Kubernetes on the cluster. Determine what to upgrade from the argument:
 
-- If version starts with `v1.` — Talos upgrade
-- If version starts with `v1.3` or similar K8s pattern — Kubernetes upgrade
-- If no argument, ask the user what to upgrade
+- A Talos version looks like `v1.14.0` (Talos 1.x minors are currently ≤ 14)
+- A Kubernetes version looks like `v1.37.x` (Kubernetes minors are currently in the 30s)
+- If ambiguous or absent, ask the user
 
 ## Talos Upgrade
 
 1. **Pre-flight checks:**
-   - Get current version on all nodes: `talos_version`
-   - Check cluster health: `talos_health`
-   - List installed extensions on each node: `talos_extensions`
-   - Create etcd snapshot: `talos_etcd_snapshot`
+   - Current version on all nodes: `talos_version`
+   - Cluster health: `talos_health`
+   - Installed extensions on each node: `talos_extensions`
+   - etcd snapshot: `talos_etcd_snapshot`
 
-2. **Decide on the image:**
-   - **No extensions** — use the stock image, e.g. `ghcr.io/siderolabs/installer:v1.13.2`.
-   - **Extensions installed** — stock images **do not contain extensions**; upgrading to one will remove them on reboot. Build a custom installer first via `/talos-image` (output type `installer`), push it to a registry, and use that image reference here. Confirm with the user before proceeding if extensions are present and only a stock image was provided.
+2. **Check the upgrade path.** Talos 1.12 and 1.13 can go directly to 1.14; 1.11 and older cannot and must hop through intermediate minors. Upgrading through the latest patch of each minor is the conservative choice.
 
-3. **Upgrade control plane nodes** (one at a time):
-   a. Call `talos_upgrade(node, image)`. The tool does the full cycle: cordon → drain (via the kubectl drain library) → install → reboot → wait for Talos back + K8s Ready → uncordon. It returns when the node is fully back in service.
-   b. Inspect the response: `"api"` (`"lifecycle"` v1.13+ or `"legacy"` <v1.13), `"talos_back"`, `"k8s_ready"`, `"uncordoned"`, `"k8s_node_name"`, `"stages"` (ordered progress).
-   c. Verify health (`talos_health`, `talos_etcd_members`) before proceeding to the next CP node.
-   - **Deferred activation:** pass `auto_reboot=false` to install without rebooting (useful for maintenance-window scheduling). The drain/wait/uncordon steps are skipped too — it's just the install. Trigger `talos_reboot(node)` later when ready.
-   - **Quorum caution:** for 3-node CP this tolerates one node down; for 2-node CP you have zero margin — the cluster will lose etcd quorum while a CP is upgrading. Warn the user explicitly on a 2-CP cluster.
+3. **Decide on the image.**
 
-4. **Upgrade worker nodes:**
-   - Use `talos_upgrade` on each worker (same single-call full-cycle as step 3).
-   - Workers can be upgraded in parallel only if the user confirms and workloads tolerate simultaneous reboots.
+   As of **v1.14, `ghcr.io/siderolabs/installer` is no longer published** — that tag 404s. Installer images come from the Image Factory:
 
-5. **Post-upgrade verification:**
-   - Check cluster health: `talos_health`
-   - Verify all nodes report new version: `talos_version`
-   - Verify extensions are still present: `talos_extensions` (catches the "upgraded to stock image" mistake)
-   - Check Kubernetes workloads via `mcp__kubernetes-mcp-server__pods_list`
+   ```
+   factory.talos.dev/metal-installer/<schematic-id>:v1.14.0
+   ```
+
+   - **No extensions** — use the empty/default schematic `376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba`.
+   - **Extensions installed** — a stock image contains none, and upgrading to one removes them on reboot. Either use the Image Factory schematic that matches the node's extensions, or build a custom installer via `/talos-image` (output type `installer`) and push it. Confirm with the user before proceeding if extensions are present and only a stock image was given.
+   - **Upgrading to v1.13 or earlier** — `ghcr.io/siderolabs/installer:v1.13.x` still exists and is still correct for those targets.
+
+   The schematic a node was installed from is recorded in the `ImageFactorySchematics` resource: `talos_get(resource_type="imagefactoryschematics", node=...)`.
+
+4. **Upgrade control plane nodes, one at a time:**
+   - Call `talos_upgrade(node, image)`. It runs the full cycle — cordon → drain → install → reboot → wait for Talos and Kubernetes → uncordon — and returns when the node is back in service.
+   - Read the response. `status: "ok"` means success; anything else is a failure whose `stages` and `*_error` fields say where it stopped. See the skill's `references/upgrade.md` for the status table.
+   - Verify with `talos_health` and `talos_etcd_members` before moving to the next node.
+   - **Deferred activation:** `auto_reboot=false` installs without rebooting (drain, wait and uncordon are skipped too). Trigger `talos_reboot(node)` in the maintenance window.
+   - **If Kubernetes is unreachable** the upgrade aborts rather than rebooting an undrained node. Only pass `skip_drain=true` when that is genuinely intended.
+   - **Quorum caution:** a 3-node control plane tolerates one node down; a 2-node control plane has no margin and loses etcd quorum whenever a member is upgrading. Warn the user explicitly on a 2-CP cluster.
+
+5. **Upgrade worker nodes** — same single call per node. Parallel only if the user confirms the workloads tolerate simultaneous reboots.
+
+6. **Post-upgrade verification:**
+   - `talos_health`
+   - `talos_version` — all nodes report the new version
+   - `talos_extensions` — catches the "upgraded to a stock image, lost the extensions" mistake
+   - `mcp__kubernetes-mcp-server__pods_list` — workloads are running
+
+7. **v1.14-specific follow-ups.** Mention these; they surprise people:
+   - **etcd metrics and health moved from port 2379 to 2383.** Prometheus scrape configs and firewall rules pointing at 2379 break silently.
+   - **Workload isolation and filesystem trim are on for new clusters but off for upgraded ones** — the documents are simply absent. Adding `SecurityProfileConfig` with `workloadIsolation` enables it, but note the in-tree Kubernetes `iscsi` volume plugin stops working under it.
+   - **`multipath-tools` users must apply a config migration *before* upgrading**, or `multipathd` hangs forever. See the skill's troubleshooting reference.
 
 ## Kubernetes Upgrade
 
-Kubernetes upgrades use `talosctl upgrade-k8s` — a complex client-side orchestration that patches configs, pre-pulls images, and monitors rollout across all nodes. As of Talos v1.13 this stays client-side (the new `LifecycleService` API covers Talos OS upgrades only).
+`talosctl upgrade-k8s` is a client-side orchestration that patches configs, pre-pulls images and
+monitors rollout across all nodes. This is still client-side in v1.14 — LifecycleService covers the
+Talos OS install only — so it is a correct use of Bash, not a fallback.
 
-0. **Precondition:** verify `talosctl` is installed and on PATH. Run `command -v talosctl >/dev/null || { echo "talosctl required for k8s upgrade (no MCP equivalent); install it first"; exit 1; }`. If missing, tell the user to install it (`brew install siderolabs/tap/talosctl` or download from https://github.com/siderolabs/talos/releases) before proceeding — there is no MCP equivalent for this path.
-1. **Pre-flight:** Create etcd snapshot via `talos_etcd_snapshot`
-2. **Dry-run:** `talosctl upgrade-k8s --to <version> --dry-run` via Bash and review the plan with the user
-3. **Run:** `talosctl upgrade-k8s --to <version>` via Bash
-4. **Verify:** Check node versions via `mcp__kubernetes-mcp-server__nodes_list`, check cluster health via `talos_health`
+0. **Precondition:** verify `talosctl` is present and matches the cluster's Talos minor.
+   ```bash
+   command -v talosctl >/dev/null || { echo "talosctl required for the k8s upgrade (no MCP equivalent); install it first"; exit 1; }
+   talosctl version --client --short
+   ```
+   If missing, point the user at `brew install siderolabs/tap/talosctl` or https://github.com/siderolabs/talos/releases.
+1. **Check the target is supported.** Talos 1.14 supports Kubernetes 1.32–1.37 (default 1.37.0); Talos 1.13 supports 1.31–1.36 (default 1.36.0).
+2. **Pre-flight:** `talos_etcd_snapshot`
+3. **Dry run:** `talosctl upgrade-k8s --to <version> --dry-run` and review the plan with the user
+4. **Run:** `talosctl upgrade-k8s --to <version>`
+5. **Verify:** node versions via `mcp__kubernetes-mcp-server__resources_list` (apiVersion `v1`, kind `Node`), then `talos_health`
 
 **Important:**
-- Always create an etcd snapshot before starting
-- Do NOT attempt to replicate the K8s upgrade manually with `talos_patch` — use `talosctl upgrade-k8s`
-- Always run `--dry-run` first to preview the upgrade plan
+- Always snapshot etcd before starting
+- Never reproduce the Kubernetes upgrade manually with `talos_patch`
+- Always `--dry-run` first
+- The command is resumable if interrupted

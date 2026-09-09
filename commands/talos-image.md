@@ -2,76 +2,84 @@
 name: talos-image
 description: Build custom Talos Linux images with extensions using the local imager
 allowed-tools: ["Read", "Write", "Bash", "Grep", "mcp__talos__*", "mcp__plugin_talos_talos__*"]
-argument-hint: "[output-type] [--extensions ext1,ext2]"
+argument-hint: "[profile] [--extensions ext1,ext2]"
 ---
 
-Build a custom Talos Linux image using the local imager container. Follow these steps:
+Build a custom Talos Linux image using the local imager container.
 
-1. **Resolve inputs** — Treat any arguments as defaults; prompt only for what's missing:
-   - Output type: `iso`, `disk-image`, `installer`, `metal`, or a cloud target (default: `iso`)
-   - Target Talos version (default: v1.13.2 — bump when the plugin tracks a newer release)
-   - Extensions to include (versioned image refs, e.g. `ghcr.io/siderolabs/iscsi-tools:v0.1.4`). **Do not use `:latest`** — Siderolabs extensions are tagged to match each Talos release. Look the right tag up at https://github.com/siderolabs/extensions/releases or the image factory.
-   - Platform/arch if relevant (e.g., `aws`, `azure`, `metal-rpi_generic`)
-   - SecureBoot: yes/no
-   - Any overlay to apply
-   - For `installer`: the destination registry/repo (so the resulting image can be pushed and referenced later by `talos_upgrade`)
+1. **Resolve inputs** — treat any arguments as defaults; prompt only for what is missing:
+   - **Profile** (default: `iso`). Valid profiles are `iso`, `metal`, `metal-4k`, `metal-uki`, `installer`, their `secureboot-*` variants, and cloud targets (`aws`, `azure`, `gcp`, `nocloud`, `vmware`, `hcloud`, `openstack`, `oracle`, …). There is **no** `disk-image` profile.
+   - **Talos version** (default: v1.14.0)
+   - **Extensions** as versioned image refs. Never `:latest`.
+   - **Arch/platform** if relevant (`--arch arm64`, SBC overlays)
+   - **SecureBoot**: yes/no
+   - For `installer`: the destination registry/repo, so the result can be pushed and referenced by `talos_upgrade`
 
-2. **Build the imager command** — Output goes to `/out` inside the container, so always bind-mount a host directory there. `--privileged` and `-v /dev:/dev` are only needed for **bootable-media** profiles (`iso`, `metal`, `disk-image`, cloud targets) which use loop devices; the `installer` profile does not need them.
+2. **Resolve extension tags properly.** Only *kernel-module* extensions embed the Talos version in their tag (e.g. `gasket-driver:<sha>-v1.14.0`); userspace ones are versioned independently (`iscsi-tools:v0.2.0`, `tailscale:1.102.2`). Do not guess — look them up:
 
-   Bootable media (iso/metal/disk-image/cloud):
+   ```bash
+   crane export ghcr.io/siderolabs/extensions:v1.14.0 | tar x -O image-digests | grep <extension-name>
+   ```
+
+3. **Build the imager command.** Output goes to `/out` inside the container, so always bind-mount a host directory there. The imager runs rootless: `--privileged` and `-v /dev:/dev` are only needed for **bootable-media** profiles (`iso`, `metal`, cloud targets) that use loop devices. The `installer` profile does not need them.
+
+   Bootable media:
    ```bash
    mkdir -p _out
    docker run --rm -t --privileged \
      -v /dev:/dev \
      -v "$PWD/_out:/out" \
-     ghcr.io/siderolabs/imager:v1.13.2 \
-     <output-type> \
+     ghcr.io/siderolabs/imager:v1.14.0 \
+     <profile> \
      --system-extension-image ghcr.io/siderolabs/<ext>:<tag> \
      [--extra-kernel-arg ...] \
      [--overlay-image ... --overlay-name ...]
    ```
 
-   Installer (Docker image tar) — v1.13+ imager runs rootless, no `--privileged` or `-v /dev:/dev` needed:
+   Installer (Docker image tar), no privileges needed:
    ```bash
    mkdir -p _out
    docker run --rm -t \
      -v "$PWD/_out:/out" \
-     ghcr.io/siderolabs/imager:v1.13.2 \
+     ghcr.io/siderolabs/imager:v1.14.0 \
      installer \
      --system-extension-image ghcr.io/siderolabs/<ext>:<tag>
    ```
 
-3. **Show the command** to the user for review before executing.
+   `ghcr.io/siderolabs/imager` is still published for v1.14 — it is only `ghcr.io/siderolabs/installer` that is gone.
 
-4. **Execute** the imager command via Bash and confirm the output file appears under `_out/`.
+4. **Show the command** to the user for review before executing.
 
-5. **Installer profile only — load, tag, push:** the tar's filename matches the build arch (`installer-amd64.tar`, `installer-arm64.tar`, …). The imager tags the loaded image as `ghcr.io/siderolabs/installer-base:vX.Y.Z` (note: `installer-base`, **not** `installer` — easy to miss). Capture the loaded reference from `docker load` rather than guessing:
+5. **Execute** via Bash and confirm the output appears under `_out/`.
+
+6. **Installer profile only — load, tag, push.** The tar's filename matches the build arch (`installer-amd64.tar`, `installer-arm64.tar`). The imager tags the loaded image `ghcr.io/siderolabs/installer-base:<version>` — note `installer-base`, not `installer`, and the tag carries **no** leading `v`. Capture the reference from `docker load` rather than reconstructing it:
+
    ```bash
-   ARCH=amd64   # or arm64, depending on what you built
-   # docker load prints "Loaded image: ghcr.io/siderolabs/installer-base:vX.Y.Z" — capture it.
+   ARCH=amd64   # or arm64
    LOADED=$(docker load -i "_out/installer-${ARCH}.tar" | awk '/Loaded image:/ {print $NF}')
    echo "loaded: $LOADED"
-   docker tag  "$LOADED" <registry>/<repo>:vX.Y.Z-custom
-   docker push <registry>/<repo>:vX.Y.Z-custom
+   docker tag  "$LOADED" <registry>/<repo>:v1.14.0-custom
+   docker push <registry>/<repo>:v1.14.0-custom
    ```
-   Then the upgrade flow can reference `<registry>/<repo>:vX.Y.Z-custom` via `talos_upgrade` (or in `.machine.install.image` at install time). The image content is the same whether the source tag was `installer` or `installer-base`; only the reference name differs.
 
-6. **Report** the output file location and any relevant details (size, SHA, pushed image ref).
+   Pass `<registry>/<repo>:v1.14.0-custom` to `talos_upgrade`, or set it as the installer image at install time.
 
-**Extension reference** (common — always tag-match to the Talos version, never `:latest`):
-- `siderolabs/iscsi-tools` — iSCSI support
-- `siderolabs/qemu-guest-agent` — QEMU/KVM guest agent
-- `siderolabs/intel-ucode` — Intel microcode updates
-- `siderolabs/amd-ucode` — AMD microcode updates
-- `siderolabs/nvidia-container-toolkit` — NVIDIA GPU support
-- `siderolabs/tailscale` — Tailscale VPN
-- `siderolabs/util-linux-tools` — Additional Linux utilities
-- `siderolabs/gasket-driver` — Google Coral TPU
-- `siderolabs/drbd` — DRBD storage replication
+7. **Report** the output location, size, SHA, and the pushed image reference.
+
+**SecureBoot** is selected by *profile*, not by an overlay: use `secureboot-iso`, `secureboot-installer`, `secureboot-metal`, or `secureboot-metal-uki`, optionally with `--secureboot-include-well-known-certs`. `--overlay-name` is for **SBC overlays** (`rpi_generic`, `rock64`, …) and has nothing to do with SecureBoot.
+
+**Common extensions** (tier in brackets):
+- `iscsi-tools` [extra] — iSCSI support
+- `qemu-guest-agent` [extra] — QEMU/KVM guest agent
+- `intel-ucode` / `amd-ucode` [core] — microcode updates
+- `nvidia-container-toolkit-lts` / `-production` [extra] — NVIDIA GPU support. The unsuffixed `nvidia-container-toolkit` no longer exists, and all NVIDIA extensions on a node must share the same branch.
+- `tailscale` [extra] — Tailscale VPN
+- `drbd` [extra] — DRBD storage replication
+- `gasket-driver` [extra] — Google Coral TPU
+- `util-linux-tools` [contrib] — additional Linux utilities
 
 **Important:**
 - Always confirm the command with the user before running
-- Docker must be available locally
-- The imager pulls extension images automatically (network required)
-- For SecureBoot, add `--overlay-name secureboot` (no `--privileged` needed for the installer profile)
-- Refer to the Talos skill's boot-assets reference for detailed profiles and options
+- Docker must be available locally, and the imager pulls extension images over the network
+- An image built for one Talos version should not be reused across a minor upgrade — rebuild it
+- See the skill's `references/boot-assets.md` for the full profile list, output formats, SBC overlays, and the extension tables

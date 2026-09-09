@@ -1,237 +1,1148 @@
-# Machine Configuration Reference (v1alpha1)
+# Machine Configuration Reference (Talos v1.14)
 
-Docs: https://docs.siderolabs.com/talos/v1.13/reference/configuration/v1alpha1/config/
+Docs: https://docs.siderolabs.com/talos/v1.14/reference/configuration/overview
+Old → new field map: https://docs.siderolabs.com/talos/v1.14/reference/configuration/document-map
+Legacy v1alpha1 schema: https://docs.siderolabs.com/talos/v1.14/reference/configuration/v1alpha1/config
 
-## Top-Level Structure
+## v1.14 at a glance
+
+| Fact | Value |
+|---|---|
+| Released | 2026-09-03 |
+| Default Kubernetes | **1.37.0** (supported 1.32.0 – 1.37.99) |
+| Registered config document kinds | **89** (44 in v1.13) |
+| Installer image | **Image Factory only** — `ghcr.io/siderolabs/installer` is no longer published for 1.14 |
+| Default CoreDNS | `registry.k8s.io/coredns/coredns:v1.14.7` |
+| Kubelet image | `ghcr.io/siderolabs/kubelet:v1.37.0` |
+
+### Installer image (breaking)
+
+`ghcr.io/siderolabs/installer:v1.14.0` returns **404** — the image is not published any more.
+(`ghcr.io/siderolabs/installer:v1.13.10` still resolves, so 1.13 and earlier are unaffected.)
+Installer images now come from the Image Factory:
+
+```
+factory.talos.dev/metal-installer/<schematic-id>:v1.14.0
+```
+
+The empty/default schematic id is
+`376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba`. Use a schematic id built for
+your extension set when you need extensions — extensions are now baked into the installer image
+rather than listed in the config (see `.machine.install.extensions` below).
+
+---
+
+## The multi-document model
+
+A machine config is a stream of YAML documents separated by `---`. Each non-`v1alpha1`-legacy
+document carries `apiVersion` + `kind`, and named documents also carry `name`:
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeClusterConfig
+clusterName: example-cluster
+endpoint: https://example.com:6443/
+---
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: ghcr.io
+endpoints:
+    - url: https://my-private-registry.local:5000
+```
+
+Rules:
+
+- **Document identity** is the tuple `(apiVersion, kind, name)`. `name` is omitted for singleton
+  kinds (e.g. `KubeNetworkConfig`, `SysctlConfig`).
+- **Duplicates are rejected**: two documents with the same identity → `duplicate document: <id>`.
+- **Order does not matter** — documents are addressed by identity, not position.
+- The legacy `version: v1alpha1` document (the one holding `machine:` / `cluster:`) is still a
+  valid member of the stream and may be mixed with the new documents, subject to the conflict
+  rules below.
+
+### What `talosctl gen config` emits on 1.14
+
+The generated control-plane config is now mostly documents. Shape (abridged, from the upstream
+v1.14 stability fixture):
 
 ```yaml
 version: v1alpha1
 debug: false
+persist: true
 machine:
-  type: controlplane  # or "worker"
-  # ... machine config
-cluster:
-  # ... cluster config
-```
-
-## Machine Section
-
-### Core Fields
-- `type`: `controlplane` or `worker`
-- `token`: machine token for node authentication
-- `ca`: machine CA certificate and key
-- `certSANs`: additional SANs for the API certificate
-
-### Install
-```yaml
-machine:
-  install:
-    disk: /dev/sda           # install target disk
-    image: ghcr.io/siderolabs/installer:v1.13.2
-    bootloader: true
-    wipe: false
-    extensions:
-      - image: ghcr.io/siderolabs/iscsi-tools:<tag-for-v1.13.2>   # never :latest — match the Talos version
-```
-
-### Network
-```yaml
-machine:
-  network:
-    hostname: node1
-    interfaces:
-      - deviceSelector:
-          hardwareAddr: "00:11:22:*"
-        addresses:
-          - 10.0.0.2/24
-        routes:
-          - network: 0.0.0.0/0
-            gateway: 10.0.0.1
-        dhcp: false
-        vip:
-          ip: 10.0.0.100
-    nameservers:
-      - 8.8.8.8
-      - 1.1.1.1
-```
-
-### Kubelet
-```yaml
-machine:
-  kubelet:
-    image: ghcr.io/siderolabs/kubelet:v1.36.0
-    extraArgs:
-      rotate-server-certificates: "true"
-    extraMounts:
-      - destination: /var/local
-        type: bind
-        source: /var/local
-        options: [bind, rshared, rw]
-    nodeIP:
-      validSubnets:
-        - 10.0.0.0/24
-```
-
-### Files
-```yaml
-machine:
-  files:
-    - content: |
-        [plugins."io.containerd.grpc.v1.cri"]
-          enable_unprivileged_ports = true
-      permissions: 0o644
-      path: /etc/cri/conf.d/20-customization.part
-      op: create
-```
-
-### Features
-```yaml
-machine:
-  features:
-    rbac: true
-    stableHostname: true
-    kubernetesTalosAPIAccess:
-      enabled: true
-      allowedRoles:
-        - os:reader
-      allowedKubernetesNamespaces:
-        - kube-system
-```
-
-### Kernel
-```yaml
-machine:
-  kernel:
-    modules:
-      - name: br_netfilter
-      - name: nf_conntrack
-```
-
-### Sysctls
-```yaml
-machine:
-  sysctls:
-    net.core.somaxconn: "65535"
-    net.ipv4.ip_forward: "1"
-    vm.overcommit_memory: "1"
-```
-
-## Cluster Section
-
-### Core Fields
-```yaml
-cluster:
-  id: <cluster-id>
-  secret: <cluster-secret>
-  controlPlane:
-    endpoint: https://10.0.0.100:6443
-  clusterName: my-cluster
-  network:
-    cni:
-      name: custom
-      urls:
-        - https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
-    dnsDomain: cluster.local
-    podSubnets:
-      - 10.244.0.0/16
-    serviceSubnets:
-      - 10.96.0.0/12
-```
-
-### API Server
-```yaml
-cluster:
-  apiServer:
-    image: registry.k8s.io/kube-apiserver:v1.36.0
-    certSANs:
-      - 10.0.0.100
-    extraArgs:
-      feature-gates: GracefulNodeShutdown=true
-    admissionControl:
-      - name: PodSecurity
-        configuration:
-          apiVersion: pod-security.admission.config.k8s.io/v1alpha1
-          kind: PodSecurityConfiguration
-          defaults:
-            enforce: baseline
-```
-
-### etcd
-```yaml
-cluster:
-  etcd:
+    type: controlplane
+    token: d8cwfa.eyvpi0xwxyarbfid
     ca:
-      crt: <base64>
-      key: <base64>
-    extraArgs:
-      election-timeout: "5000"
-    advertisedSubnets:
-      - 10.0.0.0/24
-```
-
-### Discovery
-```yaml
+        crt: <base64>
+        key: <base64>
+    certSANs: []
+    features:
+        diskQuotaSupport: true
 cluster:
-  discovery:
+    token: inn7ol.u4ehnti8qyls9ymo
+    etcd:
+        ca:
+            crt: <base64>
+            key: <base64>
+---
+apiVersion: v1alpha1
+kind: DiscoveryServiceConfig
+name: default
+endpoint: https://discovery.talos.dev/
+---
+apiVersion: v1alpha1
+kind: DiscoveryIdentityConfig
+clusterID: 0raF93qnkMvF-FZNuvyGozXNdLiT2FOWSlyBaW4PR-w=
+clusterSecret: pofHbABZq7VXuObsdLdy/bHmz6hlMHZ3p8+6WKrv1ic=
+---
+apiVersion: v1alpha1
+kind: ResolverConfig
+hostDNS:
     enabled: true
-    registries:
-      kubernetes:
-        disabled: false
-      service:
-        disabled: false
+    forwardKubeDNSToHost: true
+---
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+mount:
+    secure: true
+---
+apiVersion: v1alpha1
+kind: FilesystemTrimConfig
+interval: 168h0m0s
+---
+apiVersion: v1alpha1
+kind: SecurityProfileConfig
+workloadIsolation: true
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+auto: stable
+---
+apiVersion: v1alpha1
+kind: KubeClusterConfig
+clusterName: base
+endpoint: https://base:6443
+---
+apiVersion: v1alpha1
+kind: KubeNodeConfig
+nodeIP: {}
+labels:
+    node-role.kubernetes.io/control-plane: ""
+    node.kubernetes.io/exclude-from-external-load-balancers: ""
+taints:
+    node-role.kubernetes.io/control-plane: NoSchedule
+# ... KubeletConfig, KubeNetworkConfig, KubeAPIServerCAConfig, KubePrismConfig,
+# ... KubeAggregatorCAConfig, KubeAdmissionControlConfig, KubeAuditPolicyConfig,
+# ... KubeAuthenticationConfig, KubeAuthorizerConfig (node + rbac),
+# ... KubeEtcdEncryptionConfig, KubeServiceAccountConfig, KubeAPIServerConfig,
+# ... KubeControllerManagerConfig, KubeSchedulerConfig, KubeProxyConfig,
+# ... KubeFlannelCNIConfig, KubeCoreDNSConfig
 ```
 
-### Inline Manifests
-```yaml
-cluster:
-  inlineManifests:
-    - name: cilium
-      contents: |
-        apiVersion: v1
-        kind: Namespace
-        metadata:
-          name: cilium
+Note `SecurityProfileConfig: workloadIsolation: true` — new clusters generated by 1.14 get workload
+isolation by default. Clusters upgraded from older versions do **not** get the document and keep
+the old, non-isolated behaviour until you add it.
+
+---
+
+## Legacy v1alpha1: what survives, what moved
+
+The whole `cluster:` section is deprecated. Most of `machine:` is deprecated too. Still current
+(not deprecated) in the v1alpha1 document:
+
+- `.machine.type`, `.machine.token`, `.machine.ca`, `.machine.acceptedCAs`, `.machine.certSANs`
+- `.machine.features` — but only `rbac`, `apidCheckExtKeyUsage`, `diskQuotaSupport`,
+  `nodeAddressSortAlgorithm` remain; the rest are deprecated (table below)
+- `.machine.logging`, `.machine.seccompProfiles`
+- `.cluster.token`, `.cluster.etcd` (except `.cluster.etcd.subnet` → use `advertisedSubnets`)
+
+`.machine.network` (the entire tree) was already deprecated in v1.13.
+
+### Conflict rule (important)
+
+For most deprecated fields, a config that carries **both** the deprecated field and its replacement
+document is **rejected at load time**. Examples of the real error strings:
+
+```
+kubelet config is already set in v1alpha1 config (.machine.kubelet)
+cluster proxy config in v1alpha1 config (.machine.cluster.proxy) can't be used with KubeProxyConfig document, please remove it to avoid conflicts
+UnattendedInstallConfig config is incompatible with v1alpha1 config (.machine.install)
+.machine.nodeLabels is already set in v1alpha1 config
 ```
 
-## Strategic Merge Patching
+So migration is **all-or-nothing per area**: delete the legacy block in the same patch that adds the
+document.
 
-Patches modify the config without replacing it entirely:
+**Exception — merge instead of error.** These four merge, with the document winning on key
+conflicts:
+
+| Legacy field | Document | Behaviour |
+|---|---|---|
+| `.machine.sysctls` | `SysctlConfig` | merged, document takes precedence per key |
+| `.machine.sysfs` | `SysfsConfig` | merged, document takes precedence per key |
+| `.machine.kernel.modules` | `KernelModuleConfig` | merged |
+| `.machine.udev.rules` | `UdevRulesConfig` | merged |
+
+### Deprecation map
+
+`.machine`:
+
+| Deprecated field | Replacement |
+|---|---|
+| `.machine.controlPlane` | `KubeControllerManagerConfig`, `KubeSchedulerConfig` |
+| `.machine.kubelet` (`image`, `clusterDNS`, `extraArgs`, `extraConfig`, `defaultRuntimeSeccompProfileEnabled`) | `KubeletConfig` |
+| `.machine.kubelet.registerWithFQDN` / `.nodeIP` / `.skipNodeRegistration` | `KubeNodeConfig` |
+| `.machine.kubelet.extraMounts` | **none — no replacement exists** |
+| `.machine.kubelet.disableManifestsDirectory` | **none — locked to `true`** under `KubeletConfig` |
+| `.machine.pods` | `KubeStaticPodConfig` |
+| `.machine.network.*` | `HostnameConfig`, `LinkConfig`, `ResolverConfig`, `StaticHostConfig`, `KubeSpanConfig` (see `references/networking.md`) |
+| `.machine.disks` | `UserVolumeConfig` |
+| `.machine.install` | `UnattendedInstallConfig` |
+| `.machine.install.extraKernelArgs` | none — build a proper installer with Image Factory / imager |
+| `.machine.install.extensions` | none — **"Use custom `InstallImage` instead"**, i.e. bake extensions into a Factory schematic |
+| `.machine.install.bootloader` | none — **"Deprecated: It never worked"** |
+| `.machine.files` | `EtcFileConfig`, `CRICustomizationConfig` |
+| `.machine.env` | `EnvironmentConfig` |
+| `.machine.time` | `TimeSyncConfig` |
+| `.machine.sysctls` | `SysctlConfig` |
+| `.machine.sysfs` | `SysfsConfig` |
+| `.machine.registries` | `RegistryMirrorConfig`, `RegistryAuthConfig`, `RegistryTLSConfig` |
+| `.machine.systemDiskEncryption` | `VolumeConfig` |
+| `.machine.udev` | `UdevRulesConfig` |
+| `.machine.kernel.modules` | `KernelModuleConfig` |
+| `.machine.baseRuntimeSpecOverrides` | `CRIBaseRuntimeSpecConfig` |
+| `.machine.nodeLabels` / `.nodeAnnotations` / `.nodeTaints` | `KubeNodeConfig` |
+| `.machine.features.stableHostname` | `HostnameConfig` (`auto: stable`) |
+| `.machine.features.kubernetesTalosAPIAccess` | `KubeTalosAPIAccessConfig` |
+| `.machine.features.kubePrism` | `KubePrismConfig` |
+| `.machine.features.hostDNS` | `ResolverConfig` |
+| `.machine.features.imageCache` | `ImageCacheConfig` |
+
+`.cluster`:
+
+| Deprecated field | Replacement |
+|---|---|
+| `.cluster.id` / `.cluster.secret` | `DiscoveryIdentityConfig` |
+| `.cluster.controlPlane` / `.cluster.clusterName` | `KubeClusterConfig` |
+| `.cluster.controlPlane.localAPIServerPort` | `KubeAPIServerConfig` (`apiPort`) |
+| `.cluster.network` | `KubeNetworkConfig` + `KubeFlannelCNIConfig` |
+| `.cluster.aescbcEncryptionSecret` / `.secretboxEncryptionSecret` | `KubeEtcdEncryptionConfig` |
+| `.cluster.ca` / `.cluster.acceptedCAs` | `KubeAPIServerCAConfig` |
+| `.cluster.aggregatorCA` | `KubeAggregatorCAConfig` |
+| `.cluster.serviceAccount` | `KubeServiceAccountConfig` |
+| `.cluster.apiServer` | `KubeAPIServerConfig` |
+| `.cluster.apiServer.admissionControl` | `KubeAdmissionControlConfig` |
+| `.cluster.apiServer.auditPolicy` | `KubeAuditPolicyConfig` |
+| `.cluster.apiServer.authorizationConfig` | `KubeAuthorizerConfig` |
+| `.cluster.controllerManager` | `KubeControllerManagerConfig` |
+| `.cluster.proxy` | `KubeProxyConfig` |
+| `.cluster.scheduler` | `KubeSchedulerConfig` |
+| `.cluster.discovery` | `DiscoveryServiceConfig` |
+| `.cluster.coreDNS` | `KubeCoreDNSConfig` |
+| `.cluster.extraManifests` / `.extraManifestHeaders` | `KubeExternalManifestConfig` |
+| `.cluster.inlineManifests` | `KubeInlineManifestConfig` |
+| `.cluster.allowSchedulingOnMasters` / `.allowSchedulingOnControlPlanes` | `KubeNodeConfig` (drop the control-plane taint) |
+| `.cluster.etcd.subnet` | `.cluster.etcd.advertisedSubnets` |
+
+**`extraMounts` is a real gap.** If you need `.machine.kubelet.extraMounts`, you must keep the whole
+legacy `.machine.kubelet` block — and then you cannot use `KubeletConfig` at all, because the two
+conflict.
+
+---
+
+## Kubernetes documents (`Kube*Config`)
+
+24 documents, all new in v1.14, all `apiVersion: v1alpha1`, all in the `kubernetes` docs group.
+
+### KubeClusterConfig — cluster identity and endpoint
 
 ```yaml
-# Add a kernel module
-machine:
-  kernel:
-    modules:
-      - name: br_netfilter
+apiVersion: v1alpha1
+kind: KubeClusterConfig
+clusterName: example-cluster
+endpoint: https://example.com:6443/
+```
 
-# Delete a field
+### KubeNetworkConfig — pod/service CIDRs
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeNetworkConfig
+dnsDomain: cluster.local
+podSubnets:
+    - 10.244.0.0/16
+serviceSubnets:
+    - 10.96.0.0/12
+# nodeCIDRMaskSizeIPv4: 24
+# nodeCIDRMaskSizeIPv6: 112
+```
+
+`podSubnets` and `serviceSubnets` are tagged `merge:"replace"` — a patch **overwrites** the list,
+it never appends.
+
+### KubeFlannelCNIConfig — the built-in CNI
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeFlannelCNIConfig
+backendType: vxlan
+backendPort: 4789
+backendMTU: 1420
+extraArgs:
+    - --iface-can-reach=10.0.0.1
+kubeNetworkPoliciesEnabled: true
+# backendExtraConfig: {...}
+# resources: {requests: {...}, limits: {...}}
+```
+
+**For a custom CNI (Cilium, Calico), simply omit this document** — no `KubeFlannelCNIConfig` means
+no Flannel — and install the CNI with `KubeInlineManifestConfig` / `KubeExternalManifestConfig`, or
+out-of-band with Helm.
+
+### KubeletConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeletConfig
+image: ghcr.io/siderolabs/kubelet:v1.37.0
+config:
+    serverTLSBootstrap: true
+extraArgs:
+    feature-gates: AllBeta=true
+clusterDNS:
+    - 10.96.0.10
+defaultRuntimeSeccompProfileEnabled: true
+```
+
+`config` is the raw upstream `KubeletConfiguration`. There is **no `extraMounts`**, and
+`disableManifestsDirectory` is locked to `true`.
+
+### KubeNodeConfig — node registration, labels, taints
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeNodeConfig
+registerWithFQDN: true
+nodeIP:
+    validSubnets:
+        - 10.0.0.0/8
+        - '!10.0.0.3/32'
+        - fdc7::/16
+labels:
+    examplelabel: examplevalue
+annotations:
+    customer.io/rack: r13a25
+taints:
+    exampletaint: examplevalue:NoSchedule
+# skipNodeRegistration: false
+```
+
+To schedule workloads on control planes (the old `allowSchedulingOnControlPlanes`), remove
+`node-role.kubernetes.io/control-plane: NoSchedule` from `taints`.
+
+### KubeAPIServerConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeAPIServerConfig
+image: registry.k8s.io/kube-apiserver:v1.37.0
+extraArgs:
+    feature-gates: ServerSideApply=true
+env:
+    HTTPS_PROXY: http://proxy:8080
+resources:
+    requests:
+        cpu: 2
+        memory: 2Gi
+apiPort: 8443
+certExtraSANs:
+    - k8s.example.com
+startupProbes: false
+```
+
+### KubeControllerManagerConfig / KubeSchedulerConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeControllerManagerConfig
+image: registry.k8s.io/kube-controller-manager:v1.37.0
+extraArgs:
+    feature-gates: AllBeta=true
+env:
+    HTTPS_PROXY: http://proxy:8080
+resources:
+    requests:
+        cpu: 2
+        memory: 2Gi
+# enabled: true
+---
+apiVersion: v1alpha1
+kind: KubeSchedulerConfig
+enabled: true
+image: registry.k8s.io/kube-scheduler:v1.37.0
+config:
+    profiles: []
+extraArgs:
+    feature-gates: AllBeta=true
+resources:
+    requests:
+        cpu: 1
+        memory: 1Gi
+    limits:
+        cpu: 2
+        memory: 2500Mi
+```
+
+### KubeProxyConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeProxyConfig
+enabled: true
+image: registry.k8s.io/kube-proxy:v1.37.0
+mode: nftables
+config:
+    bindAddressHardFail: true
+extraArgs:
+    proxy-mode: nftables
+resources:
+    requests:
+        cpu: 1
+        memory: 1Gi
+    limits:
+        cpu: 2
+        memory: 2500Mi
+```
+
+Set `enabled: false` when the CNI replaces kube-proxy (Cilium kube-proxy-replacement).
+
+### KubeCoreDNSConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeCoreDNSConfig
+enabled: true
+image: registry.k8s.io/coredns/coredns:v1.14.7
+```
+
+### KubePrismConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: KubePrismConfig
+port: 7445
+tlsServerName: api.cluster.local
+```
+
+### KubeInlineManifestConfig — one document per manifest
+
+Named document: the `name` is the manifest identity, so each manifest is its own document (unlike
+the old `.cluster.inlineManifests` list).
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeInlineManifestConfig
+name: namespace-ci
+manifest: |-
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: ci
+    ---
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: build-settings
+      namespace: ci
+    data:
+      parallelism: "4"
+      verbose: "true"
+```
+
+### KubeExternalManifestConfig — fetch a manifest by URL
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeExternalManifestConfig
+name: example-cni
+url: https://www.example.com/manifest1.yaml
+headers:
+    Authorization: Bearer token
+```
+
+Pin the URL to a specific release tag — this is fetched at bootstrap on every node.
+
+### KubeEtcdEncryptionConfig — encryption-at-rest
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeEtcdEncryptionConfig
+config:
+    resources:
+        - resources:
+            - secrets
+          providers:
+            - secretbox:
+                keys:
+                    - name: key2
+                      secret: <base64-32-bytes>
+            - identity: {}
+```
+
+`config` is the upstream `EncryptionConfiguration` body verbatim (also supports `aescbc`).
+
+### KubeTalosAPIAccessConfig — Talos API from inside Kubernetes
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeTalosAPIAccessConfig
+allowedRoles:
+    - os:reader
+allowedKubernetesNamespaces:
+    - kube-system
+```
+
+### KubeAdmissionControlConfig — one document per plugin
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeAdmissionControlConfig
+name: PodSecurity
+configuration:
+    apiVersion: pod-security.admission.config.k8s.io/v1
+    kind: PodSecurityConfiguration
+    defaults:
+        enforce: baseline
+        enforce-version: latest
+        audit: restricted
+        audit-version: latest
+        warn: restricted
+        warn-version: latest
+    exemptions:
+        namespaces:
+            - kube-system
+        runtimeClasses: []
+        usernames: []
+```
+
+Use `pod-security.admission.config.k8s.io/v1` — the `v1alpha1` form still seen in some upstream
+fixtures predates Kubernetes 1.25.
+
+### Other Kubernetes documents
+
+| Kind | Purpose | Key fields |
+|---|---|---|
+| `KubeAuditPolicyConfig` | apiserver audit policy | `configuration` (`audit.k8s.io/v1` `Policy`), `merge:"replace"` |
+| `KubeAuthenticationConfig` | structured authentication (OIDC/JWT) | `configuration` (`AuthenticationConfiguration`), `merge:"replace"` |
+| `KubeAuthorizerConfig` | one authorizer per document | `name`, `type` (`Node`, `RBAC`, `Webhook`), `webhook` |
+| `KubeAPIServerCAConfig` | apiserver issuing CA | `issuingCA.cert` / `.key` |
+| `KubeAggregatorCAConfig` | front-proxy CA | `issuingCA.cert` / `.key` |
+| `KubeServiceAccountConfig` | SA token signing | `issuer.privateKey`, `issuer.issuerURL` |
+| `KubeStaticPodConfig` | static pod on control planes | `name`, `pod` (raw Pod spec, `merge:"replace"`) |
+| `KubeCredentialProviderConfig` | kubelet image credential providers | `configuration` (`kubelet.config.k8s.io/v1` `CredentialProviderConfig`), `merge:"replace"` |
+
+```yaml
+apiVersion: v1alpha1
+kind: KubeAuthorizerConfig
+name: webhook
+type: Webhook
+webhook:
+    failurePolicy: NoOpinion
+    subjectAccessReviewVersion: v1
+    timeout: 3s
+---
+apiVersion: v1alpha1
+kind: KubeCredentialProviderConfig
+configuration:
+    apiVersion: kubelet.config.k8s.io/v1
+    kind: CredentialProviderConfig
+    providers:
+        - name: ecr-credential-provider
+          apiVersion: credentialprovider.kubelet.k8s.io/v1
+          defaultCacheDuration: 12h
+          matchImages:
+            - '*.dkr.ecr.*.amazonaws.com'
+```
+
+---
+
+## Registries (mirrors, auth, TLS)
+
+Three named documents replace `.machine.registries` (available since v1.12, so they work on v1.13
+too). `name` is the **first segment of the image reference** (`docker.io` is the default);
+`name: "*"` is a catch-all for all registries.
+
+### RegistryMirrorConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: ghcr.io
+endpoints:
+    - url: https://my-private-registry.local:5000
+    - url: http://my-harbor/v2/registry-k8s.io/
+      overridePath: true
+skipFallback: true
+```
+
+- Endpoints are tried in order. Without `skipFallback: true`, Talos falls back to the original
+  registry when no mirror serves the image.
+- `overridePath: true` uses the endpoint path exactly as given, without appending `/v2/`. Needed
+  for Harbor-style proxy-cache projects.
+- A pull-through cache for everything:
+
+```yaml
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: "*"
+endpoints:
+    - url: https://registry-cache.internal:5000
+```
+
+### RegistryAuthConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: RegistryAuthConfig
+name: my-private-registry.io
+username: agent007
+password: topsecret
+# auth: <base64 user:pass>
+# identityToken: <token>
+```
+
+Credentials are stored verbatim in the machine config — treat the config as a secret.
+
+### RegistryTLSConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: RegistryTLSConfig
+name: my-tls-registry.io
+clientIdentity:
+    cert: |-
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+    key: |-
+        -----BEGIN PRIVATE KEY-----
+        ...
+        -----END PRIVATE KEY-----
+ca: |-
+    -----BEGIN CERTIFICATE-----
+    ...
+    -----END CERTIFICATE-----
+insecureSkipVerify: true
+```
+
+`ca` adds a registry-specific CA; for a host-wide trust anchor use `TrustedRootsConfig` instead.
+
+---
+
+## Storage and volumes
+
+### VolumeConfig — system volumes (`EPHEMERAL`, `STATE`, …)
+
+```yaml
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+    diskSelector:
+        match: disk.transport == "nvme" && !system_disk
+    minSize: 10GiB
+    maxSize: 2.5TiB
+    # grow: true
+mount:
+    secure: true
+    # disableAccessTime: true
+filesystem:
+    xfs:
+        minAllocationGroupSize: 128GiB
+trim:
+    enabled: true
+scrub:
+    enabled: true
+    interval: 168h0m0s
+```
+
+Encryption (`STATE` / `EPHEMERAL`):
+
+```yaml
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: STATE
+encryption:
+    provider: luks2
+    keys:
+        - slot: 0
+          tpm:
+            options:
+                pcrs: [0, 7]
+        - slot: 1
+          static:
+            passphrase: topsecret
+    cipher: aes-xts-plain64
+    # keySize, blockSize, options, allowDiscards
+```
+
+Key types: `static.passphrase`, `nodeID`, `kms.endpoint`, `tpm` (with
+`options.pcrs`, `checkSecurebootStatusOnEnroll`, and `lockToState`). `pcrs: []` disables PCR
+binding. A `VolumeConfig` with encryption for `STATE`/`EPHEMERAL` **conflicts** with a legacy
+`.machine.systemDiskEncryption` entry for the same volume.
+
+### UserVolumeConfig — user data volumes
+
+```yaml
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: ceph-data
+provisioning:
+    diskSelector:
+        match: disk.transport == "nvme" && !system_disk
+    minSize: 10GiB
+    maxSize: 100GiB
+filesystem:
+    type: xfs
+    projectQuotaSupport: true
+    xfs:
+        minAllocationGroupSize: 128GiB
+# volumeType: partition   # directory | disk | partition
+# mount: {disableAccessTime: true, secure: true}
+# trim: {enabled: true}
+# scrub: {enabled: true, interval: 168h0m0s}
+```
+
+`xfs.minAllocationGroupSize` tunes the XFS allocation-group size — useful on very large volumes.
+With `volumeType: directory`, `provisioning`, `filesystem`, `encryption` and
+`mount.disableAccessTime` are all rejected.
+
+Related block documents: `RawVolumeConfig` (unformatted, e.g. Ceph OSDs), `SwapVolumeConfig`,
+`ExistingVolumeConfig` (mount an already-provisioned volume by CEL selector), `ExternalVolumeConfig`
+(virtiofs; not supported under SELinux enforcing), `ZswapConfig`.
+
+```yaml
+apiVersion: v1alpha1
+kind: RawVolumeConfig
+name: ceph-data
+provisioning:
+    diskSelector:
+        match: disk.transport == "nvme" && !system_disk
+    minSize: 10GiB
+    maxSize: 100GiB
+---
+apiVersion: v1alpha1
+kind: ExistingVolumeConfig
+name: my-lovely-volume
+discovery:
+    volumeSelector:
+        match: volume.partition_label == "MY-DATA"
+```
+
+### FilesystemTrimConfig / FilesystemScrubConfig — cluster-wide schedules
+
+```yaml
+apiVersion: v1alpha1
+kind: FilesystemTrimConfig
+interval: 168h0m0s
+---
+apiVersion: v1alpha1
+kind: FilesystemScrubConfig
+interval: 168h0m0s
+```
+
+Both are singletons and both accept an empty body (defaults apply). When the trim document is
+absent, no automatic trimming happens unless enabled per-volume. Talos spreads the runs at a
+stable, hash-derived offset per node and per volume so they don't all fire at once.
+
+### LVM and RAID (new in v1.14)
+
+```yaml
+apiVersion: v1alpha1
+kind: LVMVolumeGroupConfig
+name: vg-pool
+provisioning:
+    volumeSelector:
+        match: disk.transport == "nvme"
+---
+apiVersion: v1alpha1
+kind: LVMLogicalVolumeConfig
+name: lv-data
+type: linear          # linear | raid0 | raid1 | raid10
+provisioning:
+    volumeGroup: vg-pool
+    maxSize: 50GiB
+    # minSize: 10GiB
+# mirrors: 1          # raid1 / raid10 only
+# stripes: 2          # raid0 / raid10 only
+---
+apiVersion: v1alpha1
+kind: RAIDArrayConfig
+name: data
+level: raid1          # raid1 is the only level today
+metadata: "1.2"       # "1.0" (default, bootable) | "1.2"
+provisioning:
+    volumeSelector:
+        match: disk.transport == "virtio"
+```
+
+Metadata `1.0` puts the superblock at the end of the member device so the array can back a bootable
+partition; use `1.2` for pure data arrays.
+
+---
+
+## Runtime and host configuration
+
+### SysctlConfig / SysfsConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: SysctlConfig
+params:
+    net.ipv4.ip_forward: "1"
+    net.core.somaxconn: "65535"
+---
+apiVersion: v1alpha1
+kind: SysfsConfig
+params:
+    devices.system.cpu.cpu0.cpufreq.scaling_governor: performance
+```
+
+Values from these documents merge with the legacy `.machine.sysctls` / `.machine.sysfs`, with the
+document winning per key (no load error).
+
+### KernelModuleConfig — one document per module
+
+```yaml
+apiVersion: v1alpha1
+kind: KernelModuleConfig
+name: btrfs
+parameters:
+    - param1
+---
+apiVersion: v1alpha1
+kind: KernelModuleConfig
+name: br_netfilter
+```
+
+### UdevRulesConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: UdevRulesConfig
+rules:
+    - SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="44", MODE="0660"
+```
+
+### EtcFileConfig — files under `/etc`
+
+```yaml
+apiVersion: v1alpha1
+kind: EtcFileConfig
+name: nfsmount.conf
+mode: 0o644
+contents: |
+    [NFSMount_Global_Options]
+```
+
+`name` is the path relative to `/etc`. For containerd/CRI drop-ins use `CRICustomizationConfig`
+instead of writing files by hand.
+
+### SecurityProfileConfig — workload isolation
+
+```yaml
+apiVersion: v1alpha1
+kind: SecurityProfileConfig
+workloadIsolation: true
+```
+
+Runs the container-runtime plane (CRI containerd, kubelet and all pods) in a dedicated PID and
+mount namespace anchored by the `sandboxd` service, isolated from `machined` (PID 1) and its file
+descriptors. `talosctl gen config` emits it with `workloadIsolation: true` on 1.14+; upgraded
+clusters keep the old behaviour unless you add the document.
+
+**Caveat:** with workload isolation on, the deprecated in-tree Kubernetes iSCSI volume plugin does
+not work (the kubelet cannot reach the host `iscsid` across the sandbox). Use a CSI driver.
+
+### UnattendedInstallConfig — replaces `.machine.install`
+
+```yaml
+apiVersion: v1alpha1
+kind: UnattendedInstallConfig
+installer:
+    image: factory.talos.dev/metal-installer/376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba:v1.14.0
+provisioning:
+    diskSelector:
+        match: disk.transport == "nvme"
+    wipe: true
+# reboot: true   # defaults: reboot only if installer.image is set
+```
+
+`installer.image` may be omitted — Talos then runs the installer matching the current Talos version
+and current schematic (requires an Image-Factory-built boot asset).
+
+The document exposes only `installer.image`, `provisioning.diskSelector.match`,
+`provisioning.wipe` and `reboot`. The other `.machine.install` fields — `disk`,
+`legacyBIOSSupport`, `grubUseUKICmdline`, `extraKernelArgs`, `extensions`, `bootloader` — have **no
+counterpart**; if you need them, keep the legacy `.machine.install` block and do not add this
+document (the two conflict).
+
+### Other runtime documents
+
+`EnvironmentConfig` (replaces `.machine.env`), `TimeSyncConfig` (replaces `.machine.time`),
+`EventSinkConfig`, `KmsgLogConfig`, `WatchdogTimerConfig`, `OOMConfig`,
+`ImageVerificationConfig`, `TrustedRootsConfig`, `ExtensionServiceConfig`, `SideroLinkConfig`,
+`PCIDriverRebindConfig`.
+
+```yaml
+apiVersion: v1alpha1
+kind: EnvironmentConfig
+variables:
+    HTTP_PROXY: http://proxy.example.com:8080
+---
+apiVersion: v1alpha1
+kind: TrustedRootsConfig
+name: custom-ca
+certificates: |-
+    -----BEGIN CERTIFICATE-----
+    MIIC0DCCAbigAwIBAgIUI7z
+    -----END CERTIFICATE-----
+---
+apiVersion: v1alpha1
+kind: ImageVerificationConfig
+rules:
+    - image: ghcr.io/*
+      keyless:
+        issuer: https://token.actions.githubusercontent.com
+        subjectRegex: https://github.com/myorg/.*
+    - image: no-verifier/*
+      skip: true
+    - image: deny-all/*
+      deny: true
+```
+
+---
+
+## CRI / containerd
+
+### CRICustomizationConfig — containerd config drop-ins
+
+```yaml
+apiVersion: v1alpha1
+kind: CRICustomizationConfig
+name: enable-metrics
+content: |
+    [plugins."io.containerd.server.v1.metrics"]
+      address = "0.0.0.0:11234"
+```
+
+Named, so multiple drop-ins coexist. Replaces the `.machine.files` +
+`/etc/cri/conf.d/*.part` pattern.
+
+### CRIBaseRuntimeSpecConfig — OCI runtime spec overrides
+
+```yaml
+apiVersion: v1alpha1
+kind: CRIBaseRuntimeSpecConfig
+overrides:
+    process:
+        rlimits:
+            - type: RLIMIT_NOFILE
+              hard: 1024
+              soft: 1024
+```
+
+`overrides` is `merge:"replace"` — a patch replaces the whole tree.
+
+### ImageCacheConfig
+
+```yaml
+apiVersion: v1alpha1
+kind: ImageCacheConfig
+local:
+    enabled: true
+```
+
+---
+
+## Cluster discovery
+
+```yaml
+apiVersion: v1alpha1
+kind: DiscoveryIdentityConfig
+clusterID: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
+clusterSecret: vlf2HU1NEZL3Ezi9Tk+RZBLJUbjnsHnTzs3wK9JNk6Q=
+---
+apiVersion: v1alpha1
+kind: DiscoveryServiceConfig
+name: primary
+endpoint: https://discovery.talos.dev/
+---
+apiVersion: v1alpha1
+kind: DiscoveryServiceConfig
+name: secondary
+endpoint: https://discovery-secondary.talos.dev/path
+---
+apiVersion: v1alpha1
+kind: DiscoveryServiceConfig
+name: grpc-endpoint
+endpoint: grpc://discovery-grpc.talos.dev:6443
+```
+
+`DiscoveryServiceConfig` is named, so **multiple discovery services** can be configured at once
+(new in v1.14). To disable discovery, ship no `DiscoveryServiceConfig` document. The mere presence
+of `.cluster.discovery` in the legacy document conflicts with any `DiscoveryServiceConfig`.
+
+---
+
+## ContainerConfig — run a container without Kubernetes (new in v1.14)
+
+Declares a container Talos runs directly against the CRI containerd instance in the dedicated
+`taloscontainers` namespace. It starts as soon as the config is applied — no image rebuild, no
+reboot — and restarts automatically 5 seconds after it stops.
+
+```yaml
+apiVersion: v1alpha1
+kind: ContainerConfig
+name: nginx
+image: docker.io/library/nginx:1.27
+environment:
+    - NGINX_PORT=8080
+mounts:
+    - userVolume:
+        name: web-content
+        destination: /usr/share/nginx/html
+        options: [ro]
+    - tmpfs:
+        destination: /tmp
+        size: 64MiB
+resources:
+    limits:
+        cpu: 1500m
+        memory: 512MiB
+dependsOn:
+    networks:
+        - addresses
+```
+
+Fields: `name` (1–63 chars, `[a-z0-9-]`, must not collide with a Talos service name), `image`
+(digest-pinned reference recommended), `entrypoint`, `args`, `workingDir`, `runAs` (`uid`/`gid`),
+`environment`, `mounts` (`userVolume` / `tmpfs` / `hostPath`), `security`
+(`profile: restricted|privileged`, `capabilities.add`/`.drop`, `machinedAccess`), `network`
+(`mode: none|host`, default `none`), `resources.limits` (`cpu`, `memory`, applied as cgroup v2
+settings), `dependsOn` (`paths`, `networks`, `time`, `containers`).
+
+These are **not** Talos services: they don't show in `talosctl services` and `talosctl service`
+doesn't apply. Status comes from the `ContainerStatus` resource. There are no user namespaces — a
+container running as uid 0 is root on the host.
+
+---
+
+## Patching
+
+### Strategic merge
+
+Documents with matching `(apiVersion, kind, name)` are merged; documents present only in the patch
+are appended.
+
+```yaml
+# Bump kubelet cluster DNS
+apiVersion: v1alpha1
+kind: KubeletConfig
+clusterDNS:
+  - 3.3.3.3
+---
+# Add a mirror (new document -> appended)
+apiVersion: v1alpha1
+kind: RegistryMirrorConfig
+name: docker.io
+endpoints:
+  - url: https://mirror.internal:5000
+```
+
+### Deleting
+
+Delete a **whole document** with `$patch: delete` next to its identity keys:
+
+```yaml
+apiVersion: v1alpha1
+kind: SideroLinkConfig
+$patch: delete
+```
+
+Delete a **list element** by matching one of its keys:
+
+```yaml
+apiVersion: v1alpha1
+kind: ExtensionServiceConfig
+name: foo
+configFiles:
+- content: hello
+  $patch: delete
+- content: hello2
+  mountPath: /etc/foo2
+```
+
+Delete a **legacy field**:
+
+```yaml
+version: v1alpha1
 machine:
+  hostname:
+    $patch: delete
   network:
-    interfaces:
-      - deviceSelector:
-          hardwareAddr: "00:11:22:*"
-        $patch: delete
+  - interface: eth0
+    $patch: delete
 ```
 
-Multi-document patches (separate with `---`) apply in order.
+A delete selector for a document that doesn't exist is silently skipped.
 
-**Merge exceptions** — these fields have non-standard merge behavior:
-- `cluster.network.podSubnets` / `serviceSubnets` — **overwritten**, not appended
-- `network.interfaces` — merged by matching `interface:` or `deviceSelector:` key
-- `network.interfaces.vlans` — merged by matching `vlanId:`
-- `cluster.apiServer.auditPolicy` — replaced entirely
-- `machine.network.nameservers` (v1.13+) — overwrites all lower layers (defaults, platform); previously a smart merge kept IPv4/IPv6 entries from lower layers when the machine config specified only one type. If you set only IPv4 nameservers now, IPv6 entries from platform defaults will not be preserved
+### Merge exceptions — replaced, not merged
 
-## New v1.13 Configuration Documents
+Fields tagged `merge:"replace"` overwrite instead of appending:
 
-Talos v1.13 introduces additional standalone configuration documents (applied alongside the v1alpha1 `Config` document in the same machine config YAML, separated by `---`). See the docs URL at the top for full schemas.
+- `KubeNetworkConfig.podSubnets` / `.serviceSubnets` (and their legacy
+  `.cluster.network.podSubnets` / `.serviceSubnets`)
+- `KubeAuditPolicyConfig.configuration`, `KubeAuthenticationConfig.configuration`,
+  `KubeCredentialProviderConfig.configuration`, and the legacy `.cluster.apiServer.auditPolicy`
+- `KubeStaticPodConfig.pod`
+- `CRIBaseRuntimeSpecConfig.overrides`
+- `NetworkRuleConfig.ingress` / `.ports`, `BGPInstanceConfig.advertise` / `.importRoutes` /
+  `.neighbors`
 
-- **`EnvironmentConfig`** — sets environment variables for Talos components. Replaces and deprecates `.machine.env`; the legacy field still works for backward compatibility. Duplicate variable names: last value wins. Remove a variable by removing it from the document and restarting the node.
-- **`ImageVerificationConfig`** — machine-wide container image signature verification. Images that get pulled on the node are verified against the configured rules; images that match no rule are pulled without verification.
-- **`ExternalVolumeConfig`** — virtiofs-based external volumes attached to the VM. **Not supported with SELinux in enforcing mode.**
-- **`KubeSpanConfig`** — see `references/networking.md` (replaces `.machine.network.kubespan`).
-- **`RoutingRuleConfig`**, **`VRFConfig`**, **`LinkAliasConfig`**, **`TCPProbeConfig`** — see `references/networking.md`.
+Legacy lists with custom merge keys: `.machine.network.interfaces` merges by `interface:` or
+`deviceSelector:`; `.vlans` merges by `vlanId:`; `.cluster.apiServer.admissionControl` merges by
+plugin `name:`.
 
-### Extra Arguments: slices accepted (v1.13)
+`.machine.network.nameservers` (v1.13+) overwrites all lower layers (defaults, platform). If you
+set only IPv4 nameservers, IPv6 entries from platform defaults are not preserved. Prefer
+`ResolverConfig`.
 
-Several fields that previously took a single string for extra arguments now also accept a list (e.g., `cluster.apiServer.extraArgs`). **Breaking change for raw resource consumers**: the protobuf format for `EtcdConfigs`, `KubeletConfigs`, `ControllerManagerConfigs`, `SchedulerConfigs`, `APIServerConfigs` changed from `map<string,string>` to `map<string,message>`. Anything that reads those resources directly (rather than via `talosctl get`'s textual output) needs to be rebuilt against the v1.13 machinery SDK.
+---
+
+## Applying configuration
+
+`talos_apply_config` modes:
+
+| Mode | Behaviour |
+|---|---|
+| `auto` | Talos decides — no reboot when the change can be applied live, reboot otherwise. **Preferred.** |
+| `no-reboot` | Apply live; fail if the change requires a reboot. |
+| `staged` | Write the config, apply on next boot. |
+| `try` | Apply with a timeout, roll back automatically. |
+| `reboot` | Still accepted over the API (enum `REBOOT = 0`, marked deprecated), but **`talosctl` dropped it from the CLI**. Use `auto` or `no-reboot`. |
+
+Validate before applying: `talosctl validate --config <file> --mode metal`.
+
+---
+
+## Migration checklist (v1alpha1 → documents)
+
+1. Pick one area at a time (kubelet, proxy, registries, …).
+2. In a single patch, add the new document **and** delete the legacy block — the two cannot coexist
+   (except sysctls/sysfs/kernel modules/udev rules, which merge).
+3. Re-check the conflict list if the apply fails: the error names the exact legacy path.
+4. Keep `.machine.kubelet` only if you need `extraMounts` — there is no document equivalent.
+5. Replace every `ghcr.io/siderolabs/installer:v1.14.x` reference with
+   `factory.talos.dev/metal-installer/<schematic-id>:v1.14.x`.

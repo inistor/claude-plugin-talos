@@ -25,7 +25,7 @@ Bootstrap a new Talos Linux cluster. Follow these steps:
 
 5. **Bootstrap etcd** — Call `talos_bootstrap` on **ONE** control plane node only.
 
-6. **Verify** — Call `talos_health` to check cluster health. Once healthy, use `mcp__kubernetes-mcp-server__nodes_top` to confirm Kubernetes is up.
+6. **Verify** — Call `talos_health` to check cluster health. Once healthy, confirm Kubernetes is up by listing nodes with `mcp__kubernetes-mcp-server__resources_list` (apiVersion `v1`, kind `Node`). Do **not** use `nodes_top` here: it needs metrics-server, which a freshly bootstrapped cluster does not have.
 
 7. **Retrieve kubeconfig** — Call `talos_kubeconfig` to fetch the admin kubeconfig and save/merge it where the user prefers (commonly `~/.kube/config`).
 
@@ -33,5 +33,7 @@ Bootstrap a new Talos Linux cluster. Follow these steps:
 - Never bootstrap more than one node
 - Wait for each step to complete before proceeding
 - Use `yq` or `jq` for parsing any YAML/JSON output, not grep
-- If the cluster will use system extensions, build a custom installer first via `/talos-image`. Then either (a) pass it to `talosctl gen config` in step 2 via `--config-patch '@patch.yaml'` where the patch sets `.machine.install.image`, or (b) edit the generated `controlplane.yaml` / `worker.yaml` to set `.machine.install.image` before step 4 (apply)
+- If the cluster will use system extensions, decide on the installer image before step 2. Either pick the matching Image Factory schematic, or build a custom installer via `/talos-image` and push it. Then either (a) pass it to `talosctl gen config` via `--config-patch '@patch.yaml'` setting the install image, or (b) edit the generated `controlplane.yaml` / `worker.yaml` before step 4.
+- **Installer image on v1.14**: `ghcr.io/siderolabs/installer` is no longer published. Use `factory.talos.dev/metal-installer/<schematic-id>:v1.14.0` — the empty/default schematic is `376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba`.
+- **On v1.14, `.machine.install` is deprecated** in favour of `UnattendedInstallConfig`, and a config carrying both is rejected. `.machine.install` still works and remains the only way to set `disk`, `extraKernelArgs`, `legacyBIOSSupport` or `grubUseUKICmdline` — so pick one and stay with it for the whole config.
 - Report progress at each step
