@@ -8,7 +8,9 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -24,7 +26,9 @@ import (
 	"github.com/siderolabs/talos/pkg/machinery/client"
 	clientconfig "github.com/siderolabs/talos/pkg/machinery/client/config"
 	"github.com/siderolabs/talos/pkg/machinery/config/configpatcher"
+	"github.com/siderolabs/talos/pkg/machinery/constants"
 	"go.yaml.in/yaml/v4"
+	"golang.org/x/sys/unix"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -61,6 +65,7 @@ func setupClient(ctx context.Context, req mcp.CallToolRequest) (*client.Client, 
 	}
 
 	node, ctxName, insecure := extractParams(req)
+	endpoint, _ := args["endpoint"].(string)
 
 	var (
 		c   *client.Client
@@ -71,9 +76,14 @@ func setupClient(ctx context.Context, req mcp.CallToolRequest) (*client.Client, 
 		if node == "" {
 			return nil, nil, fmt.Errorf("node is required for insecure mode")
 		}
+		if endpoint != "" && endpoint != node {
+			// Insecure mode dials the node directly, so a second, different
+			// endpoint cannot be honoured — say so rather than ignoring it.
+			return nil, nil, fmt.Errorf(`"endpoint" cannot be combined with insecure mode: insecure connects directly to "node" (%s)`, node)
+		}
 		c, err = newInsecureClient(ctx, node)
 	} else {
-		c, err = newClient(ctx, ctxName)
+		c, err = newClient(ctx, ctxName, endpoint)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -95,9 +105,13 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 // to anything other than "ok"/"" — or if any payload key ends in "_error"
 // (drain_failed, uncordon_error, wait_error, ...). Callers see the failure at
 // the protocol level, not just buried in the JSON body.
-func statusAwareResult(payload map[string]any) (*mcp.CallToolResult, error) {
+func statusAwareResult(payload map[string]any) *mcp.CallToolResult {
+	// A missing "status" is treated as a failure, not a success. Every caller
+	// sets it explicitly, so its absence means a code path merged a payload it
+	// could not parse — which previously surfaced as a clean success result
+	// with the real error text dropped.
 	isErr := false
-	if s, _ := payload["status"].(string); s != "ok" && s != "" {
+	if s, _ := payload["status"].(string); s != "ok" {
 		isErr = true
 	}
 	for k := range payload {
@@ -108,28 +122,49 @@ func statusAwareResult(payload map[string]any) (*mcp.CallToolResult, error) {
 	}
 	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("marshal error: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("marshal error: %v", err))
 	}
 	if isErr {
-		return mcp.NewToolResultError(string(b)), nil
+		return mcp.NewToolResultError(string(b))
 	}
-	return mcp.NewToolResultText(string(b)), nil
+	return mcp.NewToolResultText(string(b))
+}
+
+// resultText concatenates the plain-text content of a tool result. Used to
+// preserve an error message that is not JSON-encoded (so extractJSONResult
+// cannot recover it) when folding a sub-result into a larger payload.
+func resultText(res *mcp.CallToolResult) string {
+	if res == nil {
+		return ""
+	}
+	parts := []string{}
+	for _, item := range res.Content {
+		if tc, ok := item.(mcp.TextContent); ok && tc.Text != "" {
+			parts = append(parts, tc.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // parseApplyMode maps the user-facing mode string onto the protobuf enum.
 // An empty or unknown value yields AUTO, matching talosctl behaviour.
-func parseApplyMode(mode string) machine.ApplyConfigurationRequest_Mode {
+func parseApplyMode(mode string) (machine.ApplyConfigurationRequest_Mode, error) {
 	switch strings.ToLower(mode) {
+	case "", "auto":
+		return machine.ApplyConfigurationRequest_AUTO, nil
 	case "no-reboot":
-		return machine.ApplyConfigurationRequest_NO_REBOOT
+		return machine.ApplyConfigurationRequest_NO_REBOOT, nil
 	case "reboot":
-		return machine.ApplyConfigurationRequest_REBOOT
+		// Deprecated upstream (talosctl dropped the flag value in v1.14) but
+		// still accepted on the wire as ApplyConfigurationRequest_REBOOT.
+		return machine.ApplyConfigurationRequest_REBOOT, nil //nolint:staticcheck // deprecated but still supported
 	case "staged":
-		return machine.ApplyConfigurationRequest_STAGED
+		return machine.ApplyConfigurationRequest_STAGED, nil
 	case "try":
-		return machine.ApplyConfigurationRequest_TRY
+		return machine.ApplyConfigurationRequest_TRY, nil
 	default:
-		return machine.ApplyConfigurationRequest_AUTO
+		// Falling back to AUTO here would silently reboot the node on a typo.
+		return 0, fmt.Errorf("unknown mode %q: expected one of auto, no-reboot, reboot, staged, try", mode)
 	}
 }
 
@@ -142,6 +177,7 @@ type byteStream interface {
 // If filter is non-empty, only lines containing the filter string are included.
 func collectStream(stream byteStream, filter string) (string, error) {
 	var lines []string
+	var carry string
 	for {
 		data, err := stream.Recv()
 		if err != nil {
@@ -155,11 +191,26 @@ func collectStream(stream byteStream, filter string) (string, error) {
 			lines = append(lines, chunk)
 			continue
 		}
-		for line := range strings.SplitSeq(chunk, "\n") {
+		// Chunk boundaries do not align to newlines, so a log line can straddle
+		// two Recv() calls. Buffer the trailing partial line and only filter
+		// complete ones, otherwise a match is split into fragments that each
+		// fail the Contains check.
+		carry += chunk
+		for {
+			idx := strings.IndexByte(carry, '\n')
+			if idx < 0 {
+				break
+			}
+			line := carry[:idx]
+			carry = carry[idx+1:]
 			if strings.Contains(line, filter) {
 				lines = append(lines, line+"\n")
 			}
 		}
+	}
+	// Flush a final line that arrived without a trailing newline.
+	if filter != "" && carry != "" && strings.Contains(carry, filter) {
+		lines = append(lines, carry)
 	}
 	return strings.Join(lines, ""), nil
 }
@@ -234,15 +285,21 @@ func handleConfigInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 // --- Resource operations ---
 
 // getResource lists or gets COSI resources by type alias. Shared by handleGet and dedicated resource tools.
-func getResource(c *client.Client, nCtx context.Context, resourceType, resourceID string) (*mcp.CallToolResult, error) {
-	namespace := ""
-	rd, err := c.ResolveResourceKind(nCtx, &namespace, resourceType)
+func getResource(c *client.Client, nCtx context.Context, resourceType, resourceID, namespace string) (*mcp.CallToolResult, error) {
+	// ResolveResourceKind honours a non-empty namespace; when it is empty the
+	// resource's own default is used. Passing the caller's value through is
+	// what makes types that exist in several namespaces addressable.
+	ns := namespace
+	rd, err := c.ResolveResourceKind(nCtx, &ns, resourceType)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("resolve resource type failed: %v", err)), nil
 	}
 
 	resolvedType := rd.TypedSpec().Type
 	resolvedNs := rd.TypedSpec().DefaultNamespace
+	if namespace != "" {
+		resolvedNs = namespace
+	}
 
 	if resourceID != "" {
 		r, err := c.COSI.Get(nCtx,
@@ -278,8 +335,9 @@ func handleGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	args := req.GetArguments()
 	resourceType, _ := args["resource_type"].(string)
 	resourceID, _ := args["resource_id"].(string)
+	namespace, _ := args["namespace"].(string)
 
-	return getResource(c, nCtx, resourceType, resourceID)
+	return getResource(c, nCtx, resourceType, resourceID, namespace)
 }
 
 // resourceHandler returns an MCP handler for a fixed COSI resource type.
@@ -294,7 +352,8 @@ func resourceHandler(resourceType string) func(context.Context, mcp.CallToolRequ
 		args := req.GetArguments()
 		resourceID, _ := args["id"].(string)
 
-		return getResource(c, nCtx, resourceType, resourceID)
+		// Fixed-type wrappers always target the resource's default namespace.
+		return getResource(c, nCtx, resourceType, resourceID, "")
 	}
 }
 
@@ -353,17 +412,27 @@ func handleHealth(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	}
 
 	var messages []string
+	var streamErr error
 	for {
 		msg, err := resp.Recv()
 		if err != nil {
 			if err != io.EOF {
-				messages = append(messages, fmt.Sprintf("error: %v", err))
+				streamErr = err
 			}
 			break
 		}
 		messages = append(messages, msg.GetMessage())
 	}
-	return jsonResult(map[string]any{"messages": messages})
+	// A cluster-health failure ends the stream with a non-EOF status. Returning
+	// that as an ordinary message would report an unhealthy cluster as success.
+	if streamErr != nil {
+		return statusAwareResult(map[string]any{
+			"status":       "unhealthy",
+			"stream_error": streamErr.Error(),
+			"messages":     messages,
+		}), nil
+	}
+	return statusAwareResult(map[string]any{"status": "ok", "messages": messages}), nil
 }
 
 func handleVersion(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -418,9 +487,14 @@ func handleApplyConfig(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	mode, _ := args["mode"].(string)
 	dryRun, _ := args["dry_run"].(bool)
 
+	applyMode, err := parseApplyMode(mode)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
 	resp, err := c.ApplyConfiguration(nCtx, &machine.ApplyConfigurationRequest{
 		Data:   []byte(config),
-		Mode:   parseApplyMode(mode),
+		Mode:   applyMode,
 		DryRun: dryRun,
 	})
 	if err != nil {
@@ -496,14 +570,19 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		Reboot:   reboot,
 	}
 
-	if wipeMode, ok := args["wipe_mode"].(string); ok {
+	if wipeMode, ok := args["wipe_mode"].(string); ok && wipeMode != "" {
 		switch strings.ToLower(wipeMode) {
 		case "system-disk":
 			resetReq.Mode = machine.ResetRequest_SYSTEM_DISK
 		case "user-disks":
 			resetReq.Mode = machine.ResetRequest_USER_DISKS
-		default:
+		case "all":
 			resetReq.Mode = machine.ResetRequest_ALL
+		default:
+			// Defaulting to ALL on an unrecognised value would turn a typo
+			// into the most destructive wipe available.
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"unknown wipe_mode %q: expected one of all, system-disk, user-disks", wipeMode)), nil
 		}
 	}
 
@@ -522,7 +601,11 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 }
 
 // versionTagRE matches the leading "vMAJOR.MINOR" of a Talos version tag.
-var versionTagRE = regexp.MustCompile(`^v(\d+)\.(\d+)`)
+// lifecycleServiceMinMinor is the first Talos 1.x minor exposing LifecycleService
+// (install-only upgrade + explicit Reboot). Older servers use MachineService.Upgrade.
+const lifecycleServiceMinMinor = 13
+
+var versionTagRE = regexp.MustCompile(`^v?(\d+)\.(\d+)`)
 
 // serverSupportsLifecycleService probes the target node for its Talos version
 // and reports whether it is v1.13 or newer (i.e. exposes LifecycleService).
@@ -539,11 +622,14 @@ func serverSupportsLifecycleService(c *client.Client, nCtx context.Context) (boo
 	tag := msgs[0].GetVersion().GetTag()
 	m := versionTagRE.FindStringSubmatch(tag)
 	if m == nil {
-		return false, tag, fmt.Errorf("could not parse version tag %q", tag)
+		// Dev builds and vendor rebuilds can carry tags this doesn't match.
+		// LifecycleService is the common case now, so assume it rather than
+		// failing the whole upgrade on an unparseable version string.
+		return true, tag, nil
 	}
 	major, _ := strconv.Atoi(m[1])
 	minor, _ := strconv.Atoi(m[2])
-	return major > 1 || (major == 1 && minor >= 13), tag, nil
+	return major > 1 || (major == 1 && minor >= lifecycleServiceMinMinor), tag, nil
 }
 
 func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -574,9 +660,9 @@ func handleUpgrade(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	// drain/wait/uncordon orchestration and just run the install step.
 	if !autoReboot {
 		if useLifecycle {
-			return upgradeViaLifecycleService(nCtx, c, image, tag, false, rebootMode)
+			return upgradeViaLifecycleService(nCtx, c, image, tag, false, rebootMode), nil
 		}
-		return upgradeViaLegacyAPI(nCtx, c, args, image, tag, false)
+		return upgradeViaLegacyAPI(nCtx, c, args, image, tag, false), nil
 	}
 
 	return drainUpgradeReboot(ctx, nCtx, c, args, image, tag, useLifecycle, rebootMode)
@@ -605,42 +691,74 @@ func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args ma
 	// non-"ok" status, or any "_error" field) are flagged as IsError=true.
 	emit := func() {
 		payload["stages"] = stages
-		finalRes, _ = statusAwareResult(payload)
+		finalRes = statusAwareResult(payload)
 	}
 
 	// Phase 0 — discover K8s. Tolerant of failures: upgrade still proceeds.
 	// k8s.Nodename is a per-node COSI resource (use nCtx); kubeconfig is
 	// cluster-wide and only CPs serve it (use baseCtx, which routes through
 	// the talosconfig endpoints).
-	nodeName, _ := getKubernetesNodeName(nCtx, c)
+	// A discovery failure here means we cannot cordon or drain. That is only
+	// acceptable if the caller opted out of draining: silently rebooting a
+	// node with running workloads on it and reporting success is exactly the
+	// failure mode skip_drain exists to make explicit.
+	skipDrain, _ := args["skip_drain"].(bool)
+	nodeName, nodeErr := getKubernetesNodeName(nCtx, c)
 	var clientset *kubernetes.Clientset
 	if nodeName != "" {
 		cs, csErr := newK8sClientset(baseCtx, c)
 		if csErr != nil {
 			addStage(fmt.Sprintf("k8s skipped: %v", csErr))
+			if !skipDrain {
+				payload["status"] = "k8s_discovery_failed"
+				payload["k8s_discovery_error"] = csErr.Error()
+				payload["hint"] = "cannot cordon/drain without Kubernetes access; " +
+					"pass skip_drain=true to upgrade anyway (workloads will not be evicted)"
+				emit()
+				return finalRes, nil
+			}
 		} else {
 			clientset = cs
 			payload["k8s_node_name"] = nodeName
 		}
 	} else {
 		addStage("k8s skipped: node not registered as a Kubernetes member")
+		if nodeErr != nil && !skipDrain {
+			payload["status"] = "k8s_discovery_failed"
+			payload["k8s_discovery_error"] = nodeErr.Error()
+			payload["hint"] = "could not resolve the Kubernetes node name; " +
+				"pass skip_drain=true to upgrade anyway (workloads will not be evicted)"
+			emit()
+			return finalRes, nil
+		}
 	}
 
 	// Defer the uncordon. didCordon controls whether the defer attempts it
 	// (no-op if we never cordoned). Set to false after a successful explicit
 	// uncordon so the defer doesn't double-call (harmless either way, but
 	// avoids spurious "node already uncordoned" log noise).
+	//
+	// emit() overwrites the named return, so the defer re-emits only when it
+	// actually added something to the payload. Otherwise a plain
+	// `return someResult, nil` from a future early-exit path would be silently
+	// clobbered by a no-op uncordon.
 	var didCordon bool
 	defer func() {
-		if didCordon && clientset != nil {
-			if uErr := uncordonNode(baseCtx, clientset, nodeName); uErr != nil {
-				if _, already := payload["uncordoned"]; !already {
-					payload["uncordon_error"] = uErr.Error()
-				}
-			} else if _, already := payload["uncordoned"]; !already {
-				payload["uncordoned"] = true
-				addStage(fmt.Sprintf("node %s uncordoned (deferred)", nodeName))
+		if !didCordon || clientset == nil {
+			return
+		}
+		changed := false
+		if uErr := uncordonNode(baseCtx, clientset, nodeName); uErr != nil {
+			if _, already := payload["uncordoned"]; !already {
+				payload["uncordon_error"] = uErr.Error()
+				changed = true
 			}
+		} else if _, already := payload["uncordoned"]; !already {
+			payload["uncordoned"] = true
+			addStage(fmt.Sprintf("node %s uncordoned (deferred)", nodeName))
+			changed = true
+		}
+		if changed {
 			emit()
 		}
 	}()
@@ -671,15 +789,10 @@ func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args ma
 
 	// Phase 3 — install (and reboot, since auto_reboot=true got us here).
 	var installRes *mcp.CallToolResult
-	var installErr error
 	if useLifecycle {
-		installRes, installErr = upgradeViaLifecycleService(nCtx, c, image, tag, true, rebootMode)
+		installRes = upgradeViaLifecycleService(nCtx, c, image, tag, true, rebootMode)
 	} else {
-		installRes, installErr = upgradeViaLegacyAPI(nCtx, c, args, image, tag, true)
-	}
-	if installErr != nil {
-		// install returned an error result already. Re-emit it (defer will uncordon).
-		return installRes, nil
+		installRes = upgradeViaLegacyAPI(nCtx, c, args, image, tag, true)
 	}
 	if installRes == nil {
 		payload["status"] = "internal_error"
@@ -688,8 +801,20 @@ func drainUpgradeReboot(baseCtx, nCtx context.Context, c *client.Client, args ma
 		return finalRes, nil
 	}
 
+	// The install helpers report failures as plain-text error results, which
+	// extractJSONResult cannot unmarshal — it would hand back an empty map and
+	// merge nothing, leaving payload with no "status" and the error text lost.
+	// Detect that case explicitly instead of falling through as a success.
+	installPayload := extractJSONResult(installRes)
+	if len(installPayload) == 0 {
+		payload["status"] = "install_failed"
+		payload["install_error"] = resultText(installRes)
+		emit()
+		return finalRes, nil
+	}
+
 	// Merge install payload into our running payload (preserve our stages/k8s_node_name).
-	for k, v := range extractJSONResult(installRes) {
+	for k, v := range installPayload {
 		payload[k] = v
 	}
 	if status, _ := payload["status"].(string); status != "ok" {
@@ -771,7 +896,7 @@ func rebootModeOpts(mode string) []client.RebootMode {
 // issues an explicit Reboot RPC after a successful install (matching
 // talosctl's behaviour where install + reboot are orchestrated client-side).
 // The legacy force/stage options are not part of the new API and are ignored.
-func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, tag string, autoReboot bool, rebootMode string) (*mcp.CallToolResult, error) {
+func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, tag string, autoReboot bool, rebootMode string) *mcp.CallToolResult {
 	// Talos requires Containerd to be set on both Pull and Upgrade requests
 	// (zero-value enum is NS_UNKNOWN which the server rejects). Installer
 	// images live in the system containerd namespace; Driver defaults to
@@ -784,7 +909,7 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 		ImageRef:   image,
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("image pull failed (LifecycleService prep, server %s): %v", tag, err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("image pull failed (LifecycleService prep, server %s): %v", tag, err))
 	}
 	pulledName := image
 	for {
@@ -793,7 +918,7 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 			if err == io.EOF {
 				break
 			}
-			return mcp.NewToolResultError(fmt.Sprintf("image pull stream failed (server %s): %v", tag, err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf("image pull stream failed (server %s): %v", tag, err))
 		}
 		if name := resp.GetName(); name != "" {
 			pulledName = name
@@ -806,7 +931,7 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 		Source:     &machine.InstallArtifactsSource{ImageName: pulledName},
 	})
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (LifecycleService, server %s, image %q was pulled OK): %v", tag, pulledName, err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (LifecycleService, server %s, image %q was pulled OK): %v", tag, pulledName, err))
 	}
 
 	var (
@@ -819,7 +944,7 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 			if err == io.EOF {
 				break
 			}
-			return mcp.NewToolResultError(fmt.Sprintf("upgrade stream failed (server %s): %v\nprogress so far:\n%s", tag, err, strings.Join(messages, "\n"))), nil
+			return mcp.NewToolResultError(fmt.Sprintf("upgrade stream failed (server %s): %v\nprogress so far:\n%s", tag, err, strings.Join(messages, "\n")))
 		}
 		prog := resp.GetProgress()
 		if msg := prog.GetMessage(); msg != "" {
@@ -863,7 +988,7 @@ func upgradeViaLifecycleService(nCtx context.Context, c *client.Client, image, t
 // Honors force/stage/reboot_mode for compatibility with older clusters.
 // autoReboot=false maps to stage=true (legacy primitive for "install but
 // don't reboot"); an explicit stage flag from args wins if set.
-func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string]any, image, tag string, autoReboot bool) (*mcp.CallToolResult, error) {
+func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string]any, image, tag string, autoReboot bool) *mcp.CallToolResult {
 	force, _ := args["force"].(bool)
 	stage, stageSet := args["stage"].(bool)
 	if !stageSet && !autoReboot {
@@ -884,7 +1009,7 @@ func upgradeViaLegacyAPI(nCtx context.Context, c *client.Client, args map[string
 
 	resp, err := c.UpgradeWithOptions(nCtx, upgradeOpts...) //nolint:staticcheck // legacy path, intentionally kept for <v1.13 servers
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (legacy API, server %s): %v", tag, err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("upgrade failed (legacy API, server %s): %v", tag, err))
 	}
 	return statusAwareResult(map[string]any{
 		"status":     "ok",
@@ -994,11 +1119,8 @@ func handleContainers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		namespace = v
 	}
 
-	driver := common.ContainerDriver_CRI
-	if namespace == "system" {
-		driver = common.ContainerDriver_CONTAINERD
-	}
-	resp, err := c.Containers(nCtx, namespace, driver)
+	ns, driver := resolveContainerdNamespace(namespace)
+	resp, err := c.Containers(nCtx, ns, driver)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("containers failed: %v", err)), nil
 	}
@@ -1048,20 +1170,21 @@ func handleProcesses(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	}
 
 	args := req.GetArguments()
-	if sortBy, ok := args["sort"].(string); ok {
-		sort.Slice(procs, func(i, j int) bool {
-			switch strings.ToLower(sortBy) {
-			case "cpu":
-				ci, _ := procs[i]["cpu_time"].(float64)
-				cj, _ := procs[j]["cpu_time"].(float64)
-				return ci > cj
-			default: // rss
-				ri, _ := procs[i]["resident_memory"].(uint64)
-				rj, _ := procs[j]["resident_memory"].(uint64)
-				return ri > rj
-			}
-		})
-	}
+	// Sort unconditionally: "rss" is the documented default, so omitting the
+	// parameter must still sort rather than return the raw server order.
+	sortBy, _ := args["sort"].(string)
+	sort.Slice(procs, func(i, j int) bool {
+		switch strings.ToLower(sortBy) {
+		case "cpu":
+			ci, _ := procs[i]["cpu_time"].(float64)
+			cj, _ := procs[j]["cpu_time"].(float64)
+			return ci > cj
+		default: // rss
+			ri, _ := procs[i]["resident_memory"].(uint64)
+			rj, _ := procs[j]["resident_memory"].(uint64)
+			return ri > rj
+		}
+	})
 
 	return jsonResult(procs)
 }
@@ -1217,6 +1340,17 @@ func handleEtcdSnapshot(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 
 	args := req.GetArguments()
 	outputPath, _ := args["output_path"].(string)
+	if outputPath == "" {
+		outputPath = filepath.Join(defaultSnapshotDir, fmt.Sprintf("etcd-%s.snapshot", time.Now().UTC().Format("20060102T150405Z")))
+	}
+
+	// The server usually runs in an ephemeral container whose only bind mount
+	// is a read-only talosconfig. Writing the snapshot into the container's own
+	// filesystem would destroy it on exit while still reporting success, so
+	// refuse any destination that is not on a real mount.
+	if err := checkSnapshotDestination(outputPath); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
 
 	reader, err := c.EtcdSnapshot(nCtx, &machine.EtcdSnapshotRequest{})
 	if err != nil {
@@ -1234,8 +1368,65 @@ func handleEtcdSnapshot(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("write snapshot failed: %v", err)), nil
 	}
+	if err := f.Sync(); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("flush snapshot failed: %v", err)), nil
+	}
 
-	return mcp.NewToolResultText(fmt.Sprintf("Snapshot saved to %s (%d bytes)", outputPath, n)), nil
+	return statusAwareResult(map[string]any{
+		"status":      "ok",
+		"output_path": outputPath,
+		"bytes":       n,
+		"note":        "restore with: talosctl bootstrap --recover-from " + outputPath,
+	}), nil
+}
+
+// defaultSnapshotDir is the in-container directory the image creates for
+// written artifacts. It is only useful when bind-mounted from the host.
+const defaultSnapshotDir = "/out"
+
+// checkSnapshotDestination rejects paths that would vanish with the container.
+// A directory is considered durable if it is a mount point (its device differs
+// from its parent's), which is true for any -v bind mount and for a normal
+// host filesystem when the binary runs outside a container.
+func checkSnapshotDestination(path string) error {
+	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("output directory %s is not usable: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("output directory %s is not a directory", dir)
+	}
+	if !inContainer() {
+		return nil
+	}
+	if isMountPoint(dir) {
+		return nil
+	}
+	return fmt.Errorf("refusing to write the snapshot to %s: that path is inside the "+
+		"ephemeral MCP container and would be discarded on exit. Bind-mount a host "+
+		"directory (for example -v $HOME/.talos/backups:%s) and write there instead",
+		dir, defaultSnapshotDir)
+}
+
+// inContainer reports whether the process looks containerised.
+func inContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	return false
+}
+
+// isMountPoint reports whether dir sits on a different device than its parent.
+func isMountPoint(dir string) bool {
+	var st, parent unix.Stat_t
+	if err := unix.Stat(dir, &st); err != nil {
+		return false
+	}
+	if err := unix.Stat(filepath.Dir(dir), &parent); err != nil {
+		return false
+	}
+	return st.Dev != parent.Dev
 }
 
 func handleEtcdDefrag(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1324,9 +1515,14 @@ func handlePatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	}
 
 	// 3. Apply the patched config
+	applyMode, err := parseApplyMode(mode)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
 	resp, err := c.ApplyConfiguration(nCtx, &machine.ApplyConfigurationRequest{
 		Data:   patchedBytes,
-		Mode:   parseApplyMode(mode),
+		Mode:   applyMode,
 		DryRun: dryRun,
 	})
 	if err != nil {
@@ -1357,10 +1553,16 @@ func handleEtcdRemoveMember(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	defer c.Close()
 
 	args := req.GetArguments()
-	memberID, _ := args["member_id"].(float64)
+	// etcd member IDs are uint64 and routinely exceed 2^53, so they must not
+	// round-trip through a JSON number (float64) — that silently corrupts the
+	// value and can remove a different member from the quorum.
+	memberID, err := parseMemberID(args["member_id"])
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
 
 	if err := c.EtcdRemoveMemberByID(nCtx, &machine.EtcdRemoveMemberByIDRequest{
-		MemberId: uint64(memberID),
+		MemberId: memberID,
 	}); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("etcd remove member failed: %v", err)), nil
 	}
@@ -1448,12 +1650,12 @@ func handleImageList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	defer c.Close()
 
 	args := req.GetArguments()
-	ns := common.ContainerdNamespace_NS_CRI
-	if namespace, ok := args["namespace"].(string); ok && namespace == "system" {
-		ns = common.ContainerdNamespace_NS_SYSTEM
-	}
+	namespace, _ := args["namespace"].(string)
+	cd, _, _ := resolveImageNamespace(namespace)
 
-	stream, err := c.ImageList(nCtx, ns)
+	// ImageService, not the deprecated MachineService.ImageList, so this stays
+	// consistent with talos_image_remove / talos_image_prune.
+	stream, err := c.ImageClient.List(nCtx, &machine.ImageServiceListRequest{Containerd: cd})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("image list failed: %v", err)), nil
 	}
@@ -1636,7 +1838,7 @@ func handleImagePrune(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if dryRun {
 		payload["status"] = "ok"
 		payload["note"] = "dry_run=true: no images were removed. Re-run with dry_run=false to actually prune."
-		return statusAwareResult(payload)
+		return statusAwareResult(payload), nil
 	}
 
 	// 4. Remove each candidate; collect successes and failures separately so a
@@ -1666,7 +1868,7 @@ func handleImagePrune(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	} else {
 		payload["status"] = "ok"
 	}
-	return statusAwareResult(payload)
+	return statusAwareResult(payload), nil
 }
 
 func handleStats(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1681,12 +1883,9 @@ func handleStats(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	if v, ok := args["namespace"].(string); ok && v != "" {
 		namespace = v
 	}
-	driver := common.ContainerDriver_CRI
-	if namespace == "system" {
-		driver = common.ContainerDriver_CONTAINERD
-	}
+	ns, driver := resolveContainerdNamespace(namespace)
 
-	resp, err := c.Stats(nCtx, namespace, driver)
+	resp, err := c.Stats(nCtx, ns, driver)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("stats failed: %v", err)), nil
 	}
@@ -1851,4 +2050,49 @@ func handleWipe(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		return mcp.NewToolResultError(fmt.Sprintf("wipe failed: %v", err)), nil
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("Device %s wiped.", device)), nil
+}
+
+// parseMemberID accepts an etcd member ID as a string (preferred) or a JSON
+// number. etcd member IDs are uint64 and commonly exceed 2^53, where float64
+// can no longer represent them exactly, so a numeric argument that has already
+// lost precision is rejected rather than acted on.
+func parseMemberID(v any) (uint64, error) {
+	switch x := v.(type) {
+	case string:
+		if x == "" {
+			return 0, fmt.Errorf(`"member_id" is required`)
+		}
+		id, err := strconv.ParseUint(x, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("could not parse member_id %q as a uint64: %w", x, err)
+		}
+		return id, nil
+	case float64:
+		if x != math.Trunc(x) || x < 0 || x > math.MaxUint64 {
+			return 0, fmt.Errorf("member_id %v is not a valid uint64", x)
+		}
+		if x > (1 << 53) {
+			return 0, fmt.Errorf("member_id %.0f exceeds the range a JSON number represents exactly "+
+				"and may already have lost precision — pass it as a string instead", x)
+		}
+		return uint64(x), nil
+	case nil:
+		return 0, fmt.Errorf(`"member_id" is required`)
+	default:
+		return 0, fmt.Errorf(`"member_id" must be a string (got %T)`, v)
+	}
+}
+
+// resolveContainerdNamespace maps the short namespace alias used in tool
+// schemas onto the literal containerd namespace name the Containers/Stats RPCs
+// expect, plus the matching inspector driver. Talos rejects the CRI inspector
+// for any namespace other than "k8s.io", so the alias must be translated —
+// passing "cri" through verbatim fails server-side.
+func resolveContainerdNamespace(alias string) (string, common.ContainerDriver) {
+	switch strings.ToLower(alias) {
+	case "system":
+		return constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD
+	default: // "cri", "k8s.io", or empty
+		return constants.K8sContainerdNamespace, common.ContainerDriver_CRI
+	}
 }

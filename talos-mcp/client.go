@@ -11,10 +11,16 @@ import (
 
 var (
 	configPath string
+	configDir  string
 	configMu   sync.RWMutex
 )
 
-// setConfigFromContent writes talosconfig YAML to a temp file and uses it for all subsequent calls.
+// setConfigFromContent writes talosconfig YAML to a temp file and uses it for
+// all subsequent calls.
+//
+// The file contains the client private key, so it is created 0600 inside a 0700
+// per-process directory rather than loose in a shared /tmp, and cleanupConfig
+// removes it on shutdown.
 func setConfigFromContent(content string) (string, error) {
 	configMu.Lock()
 	defer configMu.Unlock()
@@ -23,8 +29,21 @@ func setConfigFromContent(content string) (string, error) {
 		os.Remove(configPath)
 	}
 
-	f, err := os.CreateTemp("", "talosconfig-*.yaml")
+	if configDir == "" {
+		d, err := os.MkdirTemp("", "talos-mcp-")
+		if err != nil {
+			return "", err
+		}
+		configDir = d
+	}
+
+	f, err := os.CreateTemp(configDir, "talosconfig-*.yaml")
 	if err != nil {
+		return "", err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		os.Remove(f.Name())
 		return "", err
 	}
 	if _, err := f.WriteString(content); err != nil {
@@ -38,6 +57,22 @@ func setConfigFromContent(content string) (string, error) {
 	return configPath, nil
 }
 
+// cleanupConfig removes the session talosconfig and its directory. Safe to call
+// when no config was ever set.
+func cleanupConfig() {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if configPath != "" {
+		os.Remove(configPath)
+		configPath = ""
+	}
+	if configDir != "" {
+		os.RemoveAll(configDir)
+		configDir = ""
+	}
+}
+
 // getConfigPath returns the current talosconfig path, or empty for default.
 func getConfigPath() string {
 	configMu.RLock()
@@ -45,8 +80,10 @@ func getConfigPath() string {
 	return configPath
 }
 
-// newClient creates a Talos client from the configured talosconfig.
-func newClient(ctx context.Context, contextName string) (*client.Client, error) {
+// newClient creates a Talos client from the configured talosconfig. A non-empty
+// endpoint overrides the endpoints from the talosconfig context, which is what
+// makes a node reachable when the configured control-plane endpoints are down.
+func newClient(ctx context.Context, contextName, endpoint string) (*client.Client, error) {
 	var opts []client.OptionFunc
 
 	if p := getConfigPath(); p != "" {
@@ -56,6 +93,9 @@ func newClient(ctx context.Context, contextName string) (*client.Client, error) 
 	}
 	if contextName != "" {
 		opts = append(opts, client.WithContextName(contextName))
+	}
+	if endpoint != "" {
+		opts = append(opts, client.WithEndpoints(endpoint))
 	}
 	return client.New(ctx, opts...)
 }

@@ -159,6 +159,12 @@ func waitForTalosReboot(ctx context.Context, c *client.Client, timeout time.Dura
 	sawDown := false
 	pollInterval := 3 * time.Second
 	for time.Now().Before(deadline) {
+		// Honour cancellation. Without this, a cancelled parent context makes
+		// every probe fail instantly, which reads as "node is down" and spins
+		// here for the whole timeout before reporting a misleading failure.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait cancelled: %w", err)
+		}
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		_, err := c.Version(probeCtx)
 		cancel()
@@ -167,7 +173,11 @@ func waitForTalosReboot(ctx context.Context, c *client.Client, timeout time.Dura
 		} else if sawDown {
 			return nil
 		}
-		time.Sleep(pollInterval)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait cancelled: %w", ctx.Err())
+		case <-time.After(pollInterval):
+		}
 	}
 	if !sawDown {
 		return fmt.Errorf("timeout: node never appeared to go down (reboot may not have been triggered)")
