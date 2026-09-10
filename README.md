@@ -29,7 +29,7 @@ To use `talos_etcd_snapshot`, also mount a writable directory at `/out`; the han
 
 ```json
 {"mcpServers": {"talos": {"command": "sh", "args": ["-c",
-  "docker run --rm -i -v $HOME/.talos:/root/.talos:ro -v $HOME/.talos/backups:/out ionnistor/talos-mcp:0.2.0-beta1"]}}}
+  "docker run --rm -i -v $HOME/.talos:/root/.talos:ro -v $HOME/.talos/backups:/out ionnistor/talos-mcp:0.2.0-beta2"]}}}
 ```
 
 **Alternative: go install** (if you prefer a local binary over Docker)
@@ -104,4 +104,6 @@ go build ./... && go vet ./... && go test ./...
 
 Releases are tagged `vX.Y.Z`; CI publishes `ionnistor/talos-mcp:X.Y.Z`. On a tag push CI asserts that the image tag in `.mcp.json` matches the tag being released, so a release can never ship pointing at an image that does not exist or is older than the tree.
 
-`plugin.json`'s `version` is separate: it gates whether installed plugins are offered an update. A pre-release bumps the `.mcp.json` pin and the git tag while leaving `version` alone, so the beta image is published and testable without existing installs moving to it.
+`plugin.json`'s `version` gates whether installed plugins are offered an update, and a pre-release is labelled there like any other version.
+
+Note that holding `version` back does **not** keep a change off users' machines. When an update does fire, Claude Code fetches the marketplace source's default branch as it is *then*, not a snapshot of the tree at that version — so anyone on an older version picks up whatever `main` currently holds. Keep `main` in a state that is safe to install.
