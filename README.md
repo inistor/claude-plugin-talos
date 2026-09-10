@@ -29,7 +29,7 @@ To use `talos_etcd_snapshot`, also mount a writable directory at `/out`; the han
 
 ```json
 {"mcpServers": {"talos": {"command": "sh", "args": ["-c",
-  "docker run --rm -i -v $HOME/.talos:/root/.talos:ro -v $HOME/.talos/backups:/out ionnistor/talos-mcp:0.1.19"]}}}
+  "docker run --rm -i -v $HOME/.talos:/root/.talos:ro -v $HOME/.talos/backups:/out ionnistor/talos-mcp:0.2.0-beta1"]}}}
 ```
 
 **Alternative: go install** (if you prefer a local binary over Docker)
@@ -43,7 +43,7 @@ Then override `.mcp.json` in your settings: `{"mcpServers": {"talos": {"command"
 ## Components
 
 ### MCP Server (Go)
-A Go MCP server wrapping the Talos gRPC API via the official SDK (`github.com/siderolabs/talos/pkg/machinery/client`), built against machinery v1.14.0. Distributed as a Docker image (`ionnistor/talos-mcp`). Pure API — no talosctl dependency.
+A Go MCP server wrapping the Talos gRPC API via the official SDK (`github.com/siderolabs/talos/pkg/machinery/client`), built against machinery v1.14.0 and speaking MCP **2026-07-28** (the legacy `initialize` handshake is still served for older clients). Distributed as a Docker image (`ionnistor/talos-mcp`). Pure API — no talosctl dependency.
 
 51 tools, all annotated read-only or destructive so a host can gate them, all carrying human-readable titles, and all returning structured content alongside the JSON text:
 
@@ -102,4 +102,6 @@ cd talos-mcp
 go build ./... && go vet ./... && go test ./...
 ```
 
-Releases are tagged `vX.Y.Z`; CI publishes `ionnistor/talos-mcp:X.Y.Z`. The image tag in `.mcp.json` must match the `version` in `.claude-plugin/plugin.json` — CI enforces this, since the two drifted apart more than once.
+Releases are tagged `vX.Y.Z`; CI publishes `ionnistor/talos-mcp:X.Y.Z`. On a tag push CI asserts that the image tag in `.mcp.json` matches the tag being released, so a release can never ship pointing at an image that does not exist or is older than the tree.
+
+`plugin.json`'s `version` is separate: it gates whether installed plugins are offered an update. A pre-release bumps the `.mcp.json` pin and the git tag while leaving `version` alone, so the beta image is published and testable without existing installs moving to it.

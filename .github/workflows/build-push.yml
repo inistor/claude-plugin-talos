@@ -14,18 +14,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # .mcp.json pins the image tag users actually run. It has drifted behind
-      # plugin.json before, shipping a plugin whose newest tools did not exist
-      # in the pinned image, so fail the build rather than publish that again.
-      - name: Check .mcp.json image tag matches plugin version
+      # .mcp.json pins the image tag users actually run. On a release it must
+      # name the image this very run publishes, or the plugin ships pointing at
+      # something that does not exist (or worse, at an older build). That is the
+      # invariant worth enforcing.
+      #
+      # It is deliberately NOT tied to plugin.json's version: that field gates
+      # whether users are offered an update, which is independent of which image
+      # to run. A pre-release pins .mcp.json to the beta image while leaving the
+      # version untouched, so existing installs stay where they are.
+      - name: Check .mcp.json pins the image this run publishes
         run: |
-          plugin_version=$(jq -r '.version' .claude-plugin/plugin.json)
           mcp_tag=$(jq -r '.mcpServers.talos.args[-1]' .mcp.json | sed 's/.*talos-mcp://')
-          echo "plugin.json version: $plugin_version"
-          echo ".mcp.json image tag: $mcp_tag"
-          if [ "$plugin_version" != "$mcp_tag" ]; then
-            echo "::error::.mcp.json pins talos-mcp:$mcp_tag but plugin.json says $plugin_version — bump .mcp.json"
-            exit 1
+          plugin_version=$(jq -r '.version' .claude-plugin/plugin.json)
+          echo ".mcp.json image tag : $mcp_tag"
+          echo "plugin.json version : $plugin_version"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            want="${{ github.ref_name }}"; want="${want#v}"
+            if [ "$mcp_tag" != "$want" ]; then
+              echo "::error::releasing $want but .mcp.json pins talos-mcp:$mcp_tag — bump .mcp.json"
+              exit 1
+            fi
+            echo "release pin OK: .mcp.json -> $want"
+          else
+            echo "::notice::branch build; .mcp.json pin is only enforced on tag pushes"
           fi
 
       - uses: actions/setup-go@v6
